@@ -34,6 +34,44 @@ router.post("/simulate", async (req, res) => {
   }
 });
 
+// เพิ่มรายการสั่งซื้อทีละ 1 รายการ
+// body ขั้นต่ำ: { "customer_id": 1, "quantity": 2 }
+// ไม่ส่ง delivery_address / delivery_latitude / delivery_longitude มา = ใช้ที่อยู่และพิกัดของลูกค้า
+// ไม่ส่ง delivery_date (YYYY-MM-DD) มา = ส่งวันนี้, note ไม่บังคับ
+router.post("/", async (req, res) => {
+  try {
+    const order = req.body ?? {};
+    const quantity = Number(order.quantity);
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 3) {
+      return res.status(400).json({ error: "quantity must be 1-3" });
+    }
+    const [rows] = await conn.query("SELECT * FROM customers WHERE id = ?", [order.customer_id]);
+    const customers = rows as Customer[];
+    if (customers.length === 0) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
+    const customer = customers[0] as Customer;
+    let sql =
+      "INSERT INTO `orders`(`customer_id`, `quantity`, `delivery_address`, `delivery_latitude`, `delivery_longitude`, `delivery_date`, `note`) VALUES (?,?,?,?,?,COALESCE(?, CURDATE()),?)";
+    const [result] = await conn.query(sql, [
+      customer.id,
+      quantity,
+      order.delivery_address ?? customer.address,
+      order.delivery_latitude ?? customer.latitude,
+      order.delivery_longitude ?? customer.longitude,
+      order.delivery_date ?? null,
+      order.note ?? null,
+    ]);
+    const insertResult = result as any;
+    res.status(201).json({
+      affected_row: insertResult.affectedRows,
+      last_idx: insertResult.insertId,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // 3.1.1, 3.1.2 แสดงรายการสั่งซื้อทั้งหมด พร้อมข้อมูลลูกค้าที่สั่ง และจำนวนกล่อง
 router.get("/", async (req, res) => {
   try {
