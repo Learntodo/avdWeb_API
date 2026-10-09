@@ -94,3 +94,20 @@ router.get("/nearby", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
+// แสดงรายการสั่งซื้อ 1 รายการ พร้อมข้อมูลลูกค้าที่สั่ง เช่น /orders/5
+router.get("/:id", async (req, res) => {
+  try {
+    const [rows] = await conn.query(
+      "SELECT orders.*, customers.first_name, customers.last_name, customers.phone FROM orders JOIN customers ON customers.id = orders.customer_id WHERE orders.id = ?",
+      [req.params.id]
+    );
+    const orders = rows as any[];
+    if (orders.length === 0) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+    res.json(orders[0]);
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});

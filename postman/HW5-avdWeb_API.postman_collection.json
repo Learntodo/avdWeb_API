@@ -1,6 +1,6 @@
 {
   "info": {
-    "_postman_id": "1e6a2caa-1aed-4c7e-9e01-0a056ae64e2f",
+    "_postman_id": "b1157e19-8dd9-4637-a136-4c00b4301df9",
     "name": "HW-5 ส่งด่วนมื้อเที่ยง API",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
@@ -247,6 +247,34 @@
                 "exec": [
                   "pm.test(\"ได้รหัส 200\", () => pm.response.to.have.status(200));",
                   "pm.collectionVariables.set(\"orderId\", pm.response.json().find(o => o.is_simulated === 1).id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "แสดงรายการสั่งซื้อ 1 รายการ",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ได้รหัส 200\", () => pm.response.to.have.status(200));"
                 ]
               }
             }
