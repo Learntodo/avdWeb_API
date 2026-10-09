@@ -10,4 +10,6 @@ export const conn = createPool({
   password: "AVNS_v83vWcRV1raddzop-wp",
   database: "defaultdb",
   ssl: { rejectUnauthorized: false }, // Aiven บังคับเชื่อมต่อแบบเข้ารหัส (ถ้าใช้ localhost ลบบรรทัดนี้ออก)
+  decimalNumbers: true, // ให้คอลัมน์ทศนิยม (ราคา พิกัด) ออกมาเป็นตัวเลข ไม่ใช่ข้อความ
+  dateStrings: true, // ให้วันที่ออกมาเป็นข้อความ "YYYY-MM-DD" ตรงกับในฐานข้อมูล
 });

@@ -7,6 +7,13 @@ import { Order } from "../model/order";
 
 export const router = express.Router();
 
+// วันที่ส่งแบบ YYYY-MM-DD ตามเวลาไทย (ไม่ส่งมา = วันนี้, ส่งแบบมีเวลาเช่น "2026-10-09T17:00:00.000Z" ก็แปลงให้)
+function thaiDate(value?: string) {
+  if (value && value.length === 10) return value;
+  const date = value ? new Date(value) : new Date();
+  return date.toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+}
+
 // 3.1 จำลองรายการสั่งซื้อ 20-30 รายการ (สุ่มลูกค้าที่มีอยู่ และจำนวน 1-3 กล่อง)
 router.post("/simulate", async (req, res) => {
   try {
@@ -18,13 +25,14 @@ router.post("/simulate", async (req, res) => {
       const customer = customers[Math.floor(Math.random() * customers.length)] as Customer;
       const quantity = 1 + Math.floor(Math.random() * 3);
       let sql =
-        "INSERT INTO `orders`(`customer_id`, `quantity`, `delivery_address`, `delivery_latitude`, `delivery_longitude`, `delivery_date`, `is_simulated`) VALUES (?,?,?,?,?,CURDATE(),1)";
+        "INSERT INTO `orders`(`customer_id`, `quantity`, `delivery_address`, `delivery_latitude`, `delivery_longitude`, `delivery_date`, `is_simulated`) VALUES (?,?,?,?,?,?,1)";
       const [result] = await conn.query(sql, [
         customer.id,
         quantity,
         customer.address,
         customer.latitude,
         customer.longitude,
+        thaiDate(),
       ]);
       const insertResult = result as any;
       affected += insertResult.affectedRows;
@@ -53,7 +61,7 @@ router.post("/", async (req, res) => {
     }
     const customer = customers[0] as Customer;
     let sql =
-      "INSERT INTO `orders`(`customer_id`, `quantity`, `unit_price`, `delivery_address`, `delivery_latitude`, `delivery_longitude`, `delivery_date`, `note`) VALUES (?,?,?,?,?,?,COALESCE(?, CURDATE()),?)";
+      "INSERT INTO `orders`(`customer_id`, `quantity`, `unit_price`, `delivery_address`, `delivery_latitude`, `delivery_longitude`, `delivery_date`, `note`) VALUES (?,?,?,?,?,?,?,?)";
     const [result] = await conn.query(sql, [
       customer.id,
       quantity,
@@ -61,7 +69,7 @@ router.post("/", async (req, res) => {
       order.delivery_address ?? customer.address,
       order.delivery_latitude ?? customer.latitude,
       order.delivery_longitude ?? customer.longitude,
-      order.delivery_date ?? null,
+      thaiDate(order.delivery_date),
       order.note ?? null,
     ]);
     const insertResult = result as any;
@@ -159,7 +167,7 @@ router.get("/:id", async (req, res) => {
 router.put("/:id", async (req, res) => {
   try {
     let id = +req.params.id;
-    let order: Order = req.body;
+    let order: Order = req.body || {};
 
     // 1. ค้นหาข้อมูลเดิมก่อน
     let sql = mysql.format("SELECT * FROM orders WHERE id = ?", [id]);
@@ -181,6 +189,10 @@ router.put("/:id", async (req, res) => {
     if (updateOrder.unit_price < 0) {
       return res.status(400).json({ error: "unit_price ต้องไม่ติดลบ" });
     }
+    if (!["pending", "delivering", "delivered", "cancelled"].includes(updateOrder.status)) {
+      return res.status(400).json({ error: "status ต้องเป็น pending, delivering, delivered หรือ cancelled" });
+    }
+    updateOrder.delivery_date = thaiDate(updateOrder.delivery_date);
 
     // 3. เขียนข้อมูลที่รวมแล้วกลับลงฐานข้อมูล
     sql =
