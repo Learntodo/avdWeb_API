@@ -1,0 +1,113 @@
+// API จัดการลูกค้า /customers (HW-5 ข้อ 2)
+import express from "express";
+import { conn } from "../dbconnect";
+import { Customer } from "../model/customer";
+
+export const router = express.Router();
+
+// 2.1 แสดงข้อมูลลูกค้าทุกคน
+router.get("/", async (req, res) => {
+  try {
+    const [rows] = await conn.query("SELECT * FROM customers");
+    res.json(rows as Customer[]);
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// 2.1 เพิ่มลูกค้า
+router.post("/", async (req, res) => {
+  try {
+    let customer: Customer = req.body;
+    let sql =
+      "INSERT INTO `customers`(`first_name`, `last_name`, `phone`, `email`, `address`, `latitude`, `longitude`) VALUES (?,?,?,?,?,?,?)";
+    const [result] = await conn.query(sql, [
+      customer.first_name,
+      customer.last_name,
+      customer.phone,
+      customer.email,
+      customer.address,
+      customer.latitude,
+      customer.longitude,
+    ]);
+    const insertResult = result as any;
+    res.status(201).json({
+      affected_row: insertResult.affectedRows,
+      last_idx: insertResult.insertId,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// 2.1 แก้ไขข้อมูลลูกค้า
+router.put("/:id", async (req, res) => {
+  try {
+    let id = req.params.id;
+    let customer: Customer = req.body;
+    let sql =
+      "UPDATE `customers` SET `first_name`=?, `last_name`=?, `phone`=?, `email`=?, `address`=?, `latitude`=?, `longitude`=? WHERE `id`=?";
+    const [result] = await conn.query(sql, [
+      customer.first_name,
+      customer.last_name,
+      customer.phone,
+      customer.email,
+      customer.address,
+      customer.latitude,
+      customer.longitude,
+      id,
+    ]);
+    const updateResult = result as any;
+    if (updateResult.affectedRows === 0) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
+    res.status(200).json({ affected_row: updateResult.affectedRows });
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// 2.1 ลบลูกค้า (ลบไม่ได้ถ้าลูกค้ายังมีรายการสั่งซื้อ)
+router.delete("/:id", async (req, res) => {
+  try {
+    let id = req.params.id;
+    const [result] = await conn.query("DELETE FROM customers WHERE id = ?", [id]);
+    const deleteResult = result as any;
+    if (deleteResult.affectedRows === 0) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
+    res.status(200).json({ affected_row: deleteResult.affectedRows });
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// 2.2 ค้นหาลูกค้าจากส่วนหนึ่งของชื่อ / นามสกุล เช่น /customers/search?name=สม
+router.get("/search", async (req, res) => {
+  try {
+    const [rows] = await conn.query(
+      "SELECT * FROM customers WHERE first_name LIKE ? OR last_name LIKE ?",
+      ["%" + req.query.name + "%", "%" + req.query.name + "%"]
+    );
+    res.json(rows as Customer[]);
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// 2.3 ค้นลูกค้าทั้งหมดในระยะ 1 กิโลเมตร จากพิกัดที่กำหนด เช่น /customers/nearby?lat=16.246&lng=103.25
+// distance_km = ระยะทาง (กม.) ระหว่างบ้านลูกค้ากับพิกัดที่ส่งมา คำนวณด้วยสูตร Haversine
+router.get("/nearby", async (req, res) => {
+  try {
+    const lat = req.query.lat;
+    const lng = req.query.lng;
+    let sql =
+      "SELECT *, 6371 * 2 * ASIN(SQRT(POWER(SIN(RADIANS(latitude - ?) / 2), 2)" +
+      " + COS(RADIANS(?)) * COS(RADIANS(latitude)) * POWER(SIN(RADIANS(longitude - ?) / 2), 2))) AS distance_km" +
+      " FROM customers HAVING distance_km <= 1 ORDER BY distance_km";
+    const [rows] = await conn.query(sql, [lat, lat, lng]);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
