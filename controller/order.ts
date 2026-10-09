@@ -2,6 +2,7 @@
 import express from "express";
 import { conn } from "../dbconnect";
 import { Customer } from "../model/customer";
+import { Order } from "../model/order";
 
 export const router = express.Router();
 
@@ -39,7 +40,7 @@ router.get("/", async (req, res) => {
     const [rows] = await conn.query(
       "SELECT orders.*, customers.first_name, customers.last_name, customers.phone FROM orders JOIN customers ON customers.id = orders.customer_id"
     );
-    res.json(rows);
+    res.json(rows as Order[]);
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }
@@ -102,7 +103,7 @@ router.get("/:id", async (req, res) => {
       "SELECT orders.*, customers.first_name, customers.last_name, customers.phone FROM orders JOIN customers ON customers.id = orders.customer_id WHERE orders.id = ?",
       [req.params.id]
     );
-    const orders = rows as any[];
+    const orders = rows as Order[];
     if (orders.length === 0) {
       return res.status(404).json({ error: "Order not found" });
     }

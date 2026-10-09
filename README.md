@@ -68,7 +68,7 @@ server.ts            เปิดเซิร์ฟเวอร์ (http.createS
 app.ts               Express app, CORS, express.json() และผูก controller
 dbconnect.ts         Connection Pool ของ MySQL (createPool)
 controller/          index.ts, customer.ts, order.ts
-model/               customer.ts (interface)
+model/               customer.ts, order.ts (interface)
 sql/schema.sql       ตาราง customers และ orders
 postman/             ชุดทดสอบ Postman
 ```
