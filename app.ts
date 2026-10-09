@@ -34,3 +34,6 @@ app.use(express.json());
 app.use("/", index);
 app.use("/customers", customer);
 app.use("/orders", order);
+
+// ให้ Vercel นำ app ไปรัน (Vercel หาไฟล์ app.ts แล้วใช้ export default)
+export default app;
