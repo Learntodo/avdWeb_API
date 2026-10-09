@@ -1,5 +1,6 @@
 // API จัดการรายการสั่งซื้อ /orders (HW-5 ข้อ 3)
 import express from "express";
+import mysql from "mysql2";
 import { conn } from "../dbconnect";
 import { Customer } from "../model/customer";
 import { Order } from "../model/order";
@@ -37,7 +38,7 @@ router.post("/simulate", async (req, res) => {
 // เพิ่มรายการสั่งซื้อทีละ 1 รายการ
 // body ขั้นต่ำ: { "customer_id": 1, "quantity": 2 }
 // ไม่ส่ง delivery_address / delivery_latitude / delivery_longitude มา = ใช้ที่อยู่และพิกัดของลูกค้า
-// ไม่ส่ง delivery_date (YYYY-MM-DD) มา = ส่งวันนี้, note ไม่บังคับ
+// ไม่ส่ง delivery_date (YYYY-MM-DD) มา = ส่งวันนี้, ไม่ส่ง unit_price มา = 65 บาท, note ไม่บังคับ
 router.post("/", async (req, res) => {
   try {
     const order = req.body ?? {};
@@ -52,10 +53,11 @@ router.post("/", async (req, res) => {
     }
     const customer = customers[0] as Customer;
     let sql =
-      "INSERT INTO `orders`(`customer_id`, `quantity`, `delivery_address`, `delivery_latitude`, `delivery_longitude`, `delivery_date`, `note`) VALUES (?,?,?,?,?,COALESCE(?, CURDATE()),?)";
+      "INSERT INTO `orders`(`customer_id`, `quantity`, `unit_price`, `delivery_address`, `delivery_latitude`, `delivery_longitude`, `delivery_date`, `note`) VALUES (?,?,?,?,?,?,COALESCE(?, CURDATE()),?)";
     const [result] = await conn.query(sql, [
       customer.id,
       quantity,
+      order.unit_price ?? 65,
       order.delivery_address ?? customer.address,
       order.delivery_latitude ?? customer.latitude,
       order.delivery_longitude ?? customer.longitude,
@@ -146,6 +148,72 @@ router.get("/:id", async (req, res) => {
       return res.status(404).json({ error: "Order not found" });
     }
     res.json(orders[0]);
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// แก้ไขรายการสั่งซื้อ ส่งมาเฉพาะฟิลด์ที่จะแก้ ฟิลด์ที่ไม่ส่งใช้ค่าเดิม
+// แก้ได้: quantity, unit_price, delivery_address, delivery_latitude, delivery_longitude, delivery_date, status, note
+// เปลี่ยนลูกค้าที่สั่ง (customer_id) ไม่ได้
+router.put("/:id", async (req, res) => {
+  try {
+    let id = +req.params.id;
+    let order: Order = req.body;
+
+    // 1. ค้นหาข้อมูลเดิมก่อน
+    let sql = mysql.format("SELECT * FROM orders WHERE id = ?", [id]);
+    let [response] = await conn.query(sql);
+    let result = response as Order[];
+    if (result.length === 0) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+    let orderOriginal = result[0] as Order;
+    if (order.customer_id !== undefined && order.customer_id != orderOriginal.customer_id) {
+      return res.status(400).json({ error: "เปลี่ยนลูกค้าของรายการสั่งซื้อไม่ได้" });
+    }
+
+    // 2. นำข้อมูลเดิมมาทับด้วยข้อมูลใหม่ที่ส่งมา
+    let updateOrder = { ...orderOriginal, ...order };
+    if (updateOrder.quantity < 1 || updateOrder.quantity > 3) {
+      return res.status(400).json({ error: "quantity must be 1-3" });
+    }
+    if (updateOrder.unit_price < 0) {
+      return res.status(400).json({ error: "unit_price ต้องไม่ติดลบ" });
+    }
+
+    // 3. เขียนข้อมูลที่รวมแล้วกลับลงฐานข้อมูล
+    sql =
+      "UPDATE `orders` SET `quantity`=?, `unit_price`=?, `delivery_address`=?, `delivery_latitude`=?, `delivery_longitude`=?, `delivery_date`=?, `status`=?, `note`=? WHERE `id`=?";
+    sql = mysql.format(sql, [
+      updateOrder.quantity,
+      updateOrder.unit_price,
+      updateOrder.delivery_address,
+      updateOrder.delivery_latitude,
+      updateOrder.delivery_longitude,
+      updateOrder.delivery_date,
+      updateOrder.status,
+      updateOrder.note,
+      id,
+    ]);
+    const [records] = await conn.query(sql);
+    const updateResult = records as any;
+    res.status(200).json({ affected_row: updateResult.affectedRows });
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ลบรายการสั่งซื้อ 1 รายการ เช่น DELETE /orders/5
+router.delete("/:id", async (req, res) => {
+  try {
+    let id = req.params.id;
+    const [result] = await conn.query("DELETE FROM orders WHERE id = ?", [id]);
+    const deleteResult = result as any;
+    if (deleteResult.affectedRows === 0) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+    res.status(200).json({ affected_row: deleteResult.affectedRows });
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }

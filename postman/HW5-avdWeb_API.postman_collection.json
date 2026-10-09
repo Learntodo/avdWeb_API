@@ -1,6 +1,6 @@
 {
   "info": {
-    "_postman_id": "b1157e19-8dd9-4637-a136-4c00b4301df9",
+    "_postman_id": "802c26d5-9128-4f19-92cf-8b19c1432fee",
     "name": "HW-5 ส่งด่วนมื้อเที่ยง API",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
@@ -407,6 +407,160 @@
           ]
         },
         {
+          "name": "3.1.3 เพิ่มรายการสั่งซื้อ 1 รายการ",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customer_id\": {{customerId}},\n  \"quantity\": 2,\n  \"unit_price\": 70\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ได้รหัส 201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"myOrderId\", pm.response.json().last_idx);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.1.3 แก้ไขรายการสั่งซื้อ (ราคา หมายเหตุ)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{myOrderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{myOrderId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"unit_price\": 75,\n  \"note\": \"ไม่ใส่ผัก\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ได้รหัส 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.1.3 เปลี่ยนลูกค้าของรายการ (ต้องไม่ได้)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{myOrderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{myOrderId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customer_id\": 999999\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ได้รหัส 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.1.3 ลบรายการสั่งซื้อ 1 รายการ",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{myOrderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{myOrderId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ได้รหัส 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "3.3 รายการสั่งซื้อในระยะ 2 กม. จากพิกัด",
           "request": {
             "method": "GET",
@@ -514,6 +668,10 @@
     },
     {
       "key": "orderId",
+      "value": ""
+    },
+    {
+      "key": "myOrderId",
       "value": ""
     }
   ]
