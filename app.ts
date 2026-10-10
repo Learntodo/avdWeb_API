@@ -11,6 +11,7 @@ export const app = express();
 const allowedOrigins = [
   "http://localhost:4200",
   "http://127.0.0.1:4200",
+  "https://adv-web-frontend.vercel.app", // หน้าเว็บ frontend ที่ deploy บน Vercel
 ];
 app.use(
   cors({
