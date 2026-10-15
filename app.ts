@@ -4,6 +4,9 @@ import cors from "cors";
 import { router as index } from "./controller/index";
 import { router as customer } from "./controller/customer";
 import { router as order } from "./controller/order";
+import { router as auth } from "./controller/auth";
+import { router as rider } from "./controller/rider";
+import { jwtAuthen, jwtError, ownerOnly } from "./jwtauth";
 
 export const app = express();
 
@@ -32,9 +35,16 @@ app.use(
 app.use(express.text());
 app.use(express.json());
 
+// ตรวจตั๋ว JWT ทุกคำขอ (ยกเว้น GET / และ POST /auth/login) แล้วดัก error ตั๋วผิด
+app.use(jwtAuthen);
+app.use(jwtError);
+
 app.use("/", index);
-app.use("/customers", customer);
-app.use("/orders", order);
+app.use("/auth", auth);
+// ส่วนของเจ้าของร้าน (ไรเดอร์เรียกได้ 403)
+app.use("/customers", ownerOnly, customer);
+app.use("/orders", ownerOnly, order);
+app.use("/riders", ownerOnly, rider);
 
 // ให้ Vercel นำ app ไปรัน (Vercel หาไฟล์ app.ts แล้วใช้ export default)
 export default app;
