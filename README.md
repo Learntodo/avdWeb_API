@@ -37,7 +37,6 @@ Web API จัดการลูกค้าและรายการสั่
 | Method | Path | หน้าที่ |
 |---|---|---|
 | POST | /auth/login | `{ "phone": "0900000000", "password": "..." }` → `200 { token, user }`, ผิด `401`, บัญชีถูกปิด `403` |
-| GET | /auth/me | ข้อมูลของคนที่ login อยู่ |
 | PUT | /auth/password | เปลี่ยนรหัสผ่านตัวเอง `{ "old_password": "...", "new_password": "..." }` (อย่างน้อย 6 ตัว) |
 | GET | /riders | แสดงไรเดอร์ทุกคน |
 | GET | /riders/{id} | แสดงไรเดอร์ 1 คน |
@@ -82,13 +81,6 @@ Web API จัดการลูกค้าและรายการสั่
 
 ต้องมีลูกค้าในระบบก่อน ถึงจะจำลองรายการสั่งซื้อได้
 
-## ทดสอบด้วย Postman
-
-1. เปิด Postman กด Import เลือก `postman/HW5-avdWeb_API.postman_collection.json`
-2. ถ้า API ไม่ได้รันที่ `http://localhost:3000` ให้แก้ตัวแปร `baseUrl` ของ collection
-3. ใส่รหัสผ่านเจ้าของร้านในตัวแปร `ownerPassword` (คำขอแรก "เจ้าของร้าน login" จะเก็บตั๋วให้ทุกคำขอใช้ต่อ)
-4. กดส่งทีละเส้น หรือ Run collection (30 คำขอ เรียงตามลำดับที่ใช้งาน) ลูกค้า ไรเดอร์ที่เพิ่ม และรายการจำลองจะถูกลบเองตอนจบ
-
 ## โครงสร้างไฟล์
 
 ```
@@ -100,5 +92,4 @@ controller/          index.ts, customer.ts, order.ts, auth.ts, rider.ts
 model/               customer.ts, order.ts, user.ts (interface)
 sql/schema.sql       ตาราง customers และ orders
 sql/users.sql        ตาราง users (เจ้าของร้าน + ไรเดอร์) และบัญชีเจ้าของร้าน
-postman/             ชุดทดสอบ Postman
 ```

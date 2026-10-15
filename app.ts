@@ -19,7 +19,7 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: function (origin, callback) {
-      // ไม่มี origin = เรียกจาก Postman หรือเบื้องหลัง ให้ผ่านได้
+      // ไม่มี origin = ไม่ได้เรียกจากเบราว์เซอร์ (เรียกตรงจากโปรแกรมอื่น) ให้ผ่านได้
       if (!origin || allowedOrigins.indexOf(origin) !== -1) {
         callback(null, true);
       } else {

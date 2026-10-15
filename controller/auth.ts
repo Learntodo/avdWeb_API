@@ -39,24 +39,6 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// GET /auth/me ข้อมูลของคนที่ login อยู่ (ดูจากตั๋ว)
-router.get("/me", async (req, res) => {
-  try {
-    const auth = (req as any).auth as TokenPayload;
-    const [rows] = await conn.query(
-      "SELECT id, phone, role, first_name, last_name, license_plate FROM users WHERE id = ?",
-      [auth.id]
-    );
-    const users = rows as User[];
-    if (users.length === 0) {
-      return res.status(404).json({ error: "User not found" });
-    }
-    res.json(users[0]);
-  } catch (error) {
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
 // PUT /auth/password เปลี่ยนรหัสผ่านของตัวเอง body: { "old_password": "...", "new_password": "..." }
 router.put("/password", async (req, res) => {
   try {
