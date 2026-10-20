@@ -8,7 +8,7 @@ import { Order } from "../model/order";
 export const router = express.Router();
 
 // วันที่ส่งแบบ YYYY-MM-DD ตามเวลาไทย (ไม่ส่งมา = วันนี้, ส่งแบบมีเวลาเช่น "2026-10-09T17:00:00.000Z" ก็แปลงให้)
-function thaiDate(value?: string) {
+export function thaiDate(value?: string) {
   if (value && value.length === 10) return value;
   const date = value ? new Date(value) : new Date();
   return date.toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
@@ -99,11 +99,16 @@ router.get("/", async (req, res) => {
 router.patch("/:id", async (req, res) => {
   try {
     let id = req.params.id;
+    const body = req.body || {};
     let sql = "UPDATE orders SET quantity = ? WHERE id = ?";
-    let value = req.body.quantity;
-    if (req.body.change !== undefined) {
+    let value = body.quantity;
+    if (body.change !== undefined) {
       sql = "UPDATE orders SET quantity = quantity + ? WHERE id = ?";
-      value = req.body.change;
+      value = body.change;
+    }
+    // ต้องเป็นจำนวนเต็มเท่านั้น (จำนวนกล่องเกิน 1-3 ฐานข้อมูลจะไม่ยอมบันทึก)
+    if (!Number.isInteger(value)) {
+      return res.status(400).json({ error: "quantity / change ต้องเป็นจำนวนเต็ม" });
     }
     const [result] = await conn.query(sql, [value, id]);
     const updateResult = result as any;

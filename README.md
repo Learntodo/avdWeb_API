@@ -6,7 +6,7 @@ Web API จัดการลูกค้าและรายการสั่
 ## วิธีรัน
 
 1. แก้ไฟล์ `dbconnect.ts` ใส่ host / user / password / database ของฐานข้อมูล (ค่าเดียวกับใน `avdWeb/backend/.env`)
-2. สร้างตารางในฐานข้อมูล: รัน `sql/schema.sql` แล้วต่อด้วย `sql/users.sql` ใน phpMyAdmin / MySQL Workbench / DBeaver (ทำครั้งเดียว)
+2. สร้างตารางในฐานข้อมูล: รัน `sql/schema.sql` → `sql/users.sql` → `sql/routes.sql` ใน phpMyAdmin / MySQL Workbench / DBeaver (ทำครั้งเดียว)
 3. ตั้งค่า `JWT_SECRET` (ค่าสุ่มยาวๆ ใช้เซ็นตั๋ว login) ถ้าไม่ตั้ง เซิร์ฟเวอร์จะไม่ยอมเปิด
    - รันในเครื่อง: สร้างไฟล์ `.env` ใส่บรรทัด `JWT_SECRET=ค่าสุ่ม` (ไฟล์ `.env` ไม่ขึ้น GitHub)
    - บน Vercel: Settings → Environment Variables เพิ่ม `JWT_SECRET`
@@ -23,13 +23,11 @@ Web API จัดการลูกค้าและรายการสั่
    ```shell
    npx ts-node-dev server.ts
    ```
-6. Deploy บน Render
-   - Build Command: `npm install && npx tsc`
-   - Start Command: `node dist/server.js`
+6. Deploy บน Vercel: push ขึ้น branch `main` แล้ว Vercel build ให้เอง (ใช้ `export default app` ใน `app.ts`)
 
 ## ระบบ login (JWT)
 
-- ทุกเส้นต้องแนบ Header `Authorization: Bearer <token>` ยกเว้น `GET /` และ `POST /auth/login` ไม่มีตั๋ว / ตั๋วปลอม / หมดอายุ ได้ `401`
+- ทุกเส้นต้องแนบ Header `Authorization: Bearer <token>` ยกเว้น `GET /`, `POST /auth/login` และ `GET /jobs/{code}` ไม่มีตั๋ว / ตั๋วปลอม / หมดอายุ ได้ `401`
 - `/customers`, `/orders`, `/riders` ใช้ได้เฉพาะเจ้าของร้าน ไรเดอร์เรียกได้ `403`
 - ทุกคน login ด้วยเบอร์โทร + รหัสผ่าน เจ้าของร้านเริ่มต้นคือเบอร์ `0900000000` (รหัสผ่านแจ้งแยก) ตั๋วอายุ 12 ชม.
 - รหัสผ่านเก็บแบบเข้ารหัสด้วย bcrypt ไม่มีรหัสจริงในฐานข้อมูล
@@ -43,6 +41,33 @@ Web API จัดการลูกค้าและรายการสั่
 | POST | /riders | เพิ่มไรเดอร์ `{ "first_name", "last_name", "phone", "license_plate", "password" }` (เบอร์ซ้ำ `409`) |
 | PUT | /riders/{id} | แก้ไขไรเดอร์ ส่งเฉพาะฟิลด์ที่จะแก้ เช่น `{ "is_active": 0 }` ส่ง `password` = ตั้งรหัสใหม่ |
 | DELETE | /riders/{id} | ลบไรเดอร์ |
+
+## จัดเส้นทางส่ง และใบงานไรเดอร์
+
+เงื่อนไขตามโจทย์: ออกจากร้าน 11:30 ต้องถึงไม่เกิน 12:30, ไรเดอร์คนละไม่เกิน 3 ออเดอร์, ขับ 30 กม./ชม.,
+ค่าไรเดอร์ = 15 + 2 × กม.ทั้งรอบ × จำนวนกล่อง, ขายกล่องละ 65 ต้นทุน 40 (ค่าคงที่อยู่ใน `planner.ts`)
+ค่าที่สมมติเพิ่ม: ระยะถนน = ระยะเส้นตรง (Haversine) × 1.3, จอดส่งจุดละ 5 นาที, ค่าส่งไม่นับขากลับร้าน
+
+วิธีคิด (`planner.ts`): เริ่มให้ไรเดอร์ 1 คนต่อ 1 ออเดอร์ → รวมกลุ่มที่อยู่ใกล้กันถ้าค่าไรเดอร์รวมลดลง (Savings)
+→ ลองย้าย/สลับออเดอร์ระหว่างไรเดอร์ → ในแต่ละกลุ่มลองทุกลำดับ (ไม่เกิน 6 แบบ) เลือกระยะสั้นสุดที่ไม่เลท
+ทำซ้ำแบบสุ่ม 80 รอบ แล้วเสนอ 3 แผนที่ค่าใช้จ่ายน้อยสุด
+
+| Method | Path | หน้าที่ |
+|---|---|---|
+| POST | /routes/plan | คำนวณแผน 3 แบบ (ยังไม่บันทึก) `{ "date": "2026-10-20", "round": 0 }` round = ครั้งที่กดคำนวณใหม่ |
+| POST | /routes | ยืนยันแผนเป็นใบงาน `{ "date": "2026-10-20", "routes": [[5, 2], [7], [1, 9, 3]] }` ได้เลขใบงานของแต่ละคน ออเดอร์เปลี่ยนเป็น "กำลังส่ง" |
+| GET | /routes?date=2026-10-20 | ใบงานที่บันทึกของวันนั้น พร้อมสรุปยอดขาย ค่าไรเดอร์ กำไร |
+| DELETE | /routes?date=2026-10-20 | ยกเลิกใบงานของวันนั้น ออเดอร์กลับเป็น "รอส่ง" |
+| GET | /jobs/{code} | ใบงานของไรเดอร์จากเลขใบงาน 8 ตัว (ไม่ต้อง login) |
+
+`/routes` ใช้ได้เฉพาะเจ้าของร้าน
+
+## ความปลอดภัย
+
+- SQL ทุกคำสั่งใช้ `?` (ป้องกัน SQL Injection), รหัสผ่านเก็บแบบ bcrypt, JWT บังคับ HS256 + issuer
+- login ได้ไม่เกิน 20 ครั้ง / 15 นาที ต่อเครื่อง, เปิดใบงานไม่เกิน 60 ครั้ง / 15 นาที (`limiter.ts`) ตอบ `429`
+- เลขใบงานสุ่มด้วย `crypto.randomInt` 8 ตัว (32^8 แบบ) เดาไม่ได้ และใบงานไม่แสดงยอดขาย/กำไรของร้าน
+- Error ที่ไม่ได้ดักตอบ JSON สั้นๆ ไม่ส่ง stack trace, ปิด header `X-Powered-By`
 
 ## API (เลขข้อตามโจทย์ HW-5)
 
@@ -85,11 +110,14 @@ Web API จัดการลูกค้าและรายการสั่
 
 ```
 server.ts            เปิดเซิร์ฟเวอร์ (http.createServer)
-app.ts               Express app, CORS, express.json(), ตรวจตั๋ว JWT และผูก controller
+app.ts               Express app, CORS, express.json(), ตรวจตั๋ว JWT, จำกัดจำนวนครั้ง และผูก controller
 dbconnect.ts         Connection Pool ของ MySQL (createPool)
 jwtauth.ts           สร้างตั๋ว / ตรวจตั๋ว JWT / ให้เข้าเฉพาะเจ้าของร้าน (ownerOnly)
-controller/          index.ts, customer.ts, order.ts, auth.ts, rider.ts
-model/               customer.ts, order.ts, user.ts (interface)
+limiter.ts           จำกัดจำนวนครั้งที่เรียก API ต่อเครื่อง (กันเดารหัสผ่าน / เลขใบงาน)
+planner.ts           คำนวณเส้นทางส่ง แบ่งออเดอร์ให้ไรเดอร์ และสรุปค่าใช้จ่าย
+controller/          index.ts, customer.ts, order.ts, auth.ts, rider.ts, route.ts, job.ts
+model/               customer.ts, order.ts, user.ts, route.ts (interface)
 sql/schema.sql       ตาราง customers และ orders
 sql/users.sql        ตาราง users (เจ้าของร้าน + ไรเดอร์) และบัญชีเจ้าของร้าน
+sql/routes.sql       ตาราง routes (ใบงาน) และ route_stops (จุดส่งในใบงาน)
 ```

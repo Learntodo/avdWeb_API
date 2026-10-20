@@ -7,15 +7,20 @@ import { User } from "../model/user";
 
 export const router = express.Router();
 
+// hash ปลอมไว้เทียบตอนไม่พบเบอร์ ให้ใช้เวลาตอบเท่ากับกรณีรหัสผิด (กันการเดาว่าเบอร์ไหนมีในระบบจากเวลาที่ตอบ)
+const DUMMY_HASH = "$2b$10$BwWjQWTBWT9d9JoyVJIM1enbMSKp9nsmwBlmoycvvtP/b0PPk6Kz2";
+
 // POST /auth/login เข้าสู่ระบบ body: { "phone": "0900000000", "password": "..." }
 // สำเร็จได้ตั๋ว (token) ไว้แนบ Header Authorization: Bearer <token> ทุกคำขอ
 router.post("/login", async (req, res) => {
   try {
     const body = req.body || {};
-    const [rows] = await conn.query("SELECT * FROM users WHERE phone = ?", [body.phone]);
+    const [rows] = await conn.query("SELECT * FROM users WHERE phone = ?", [String(body.phone)]);
     const users = rows as User[];
     // ไม่พบเบอร์ หรือรหัสผ่านไม่ตรง ตอบข้อความเดียวกัน (ไม่บอกว่าผิดที่เบอร์หรือรหัส)
-    if (users.length === 0 || !(await bcrypt.compare(String(body.password), users[0]!.password))) {
+    const hash = users.length > 0 ? users[0]!.password : DUMMY_HASH;
+    const match = await bcrypt.compare(String(body.password), hash);
+    if (users.length === 0 || !match) {
       return res.status(401).json({ error: "เบอร์โทรหรือรหัสผ่านไม่ถูกต้อง" });
     }
     const user = users[0] as User;

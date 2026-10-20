@@ -16,12 +16,13 @@ export interface TokenPayload {
   role: "owner" | "rider";
 }
 
-// มิดเดิลแวร์ดักตรวจ JWT ก่อนเข้าใช้ API (ยกเว้นหน้าแรกกับหน้า login)
+// มิดเดิลแวร์ดักตรวจ JWT ก่อนเข้าใช้ API (ยกเว้นหน้าแรก หน้า login และการเปิดดูใบงานด้วยเลขใบงาน)
 export const jwtAuthen = expressjwt({
   secret: secret,
   algorithms: ["HS256"],
+  issuer: "CS-MSU",
 }).unless({
-  path: ["/", "/auth/login"],
+  path: ["/", "/auth/login", { url: /^\/jobs\/[^/]+$/, methods: ["GET"] }],
 });
 
 // สร้างตั๋ว JWT ใหม่ หมดอายุใน 12 ชั่วโมง (ใช้ได้ทั้งวันทำงาน)
