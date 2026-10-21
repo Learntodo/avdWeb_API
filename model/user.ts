@@ -8,6 +8,7 @@ export interface User {
   last_name: string;
   license_plate: string | null; // ทะเบียนรถ (เฉพาะไรเดอร์)
   is_active: number; // 1 = ใช้งานได้, 0 = ปิดใช้งาน (login ไม่ได้)
+  is_simulated?: number; // 1 = ไรเดอร์จำลอง
   created_at: string;
   updated_at: string;
 }

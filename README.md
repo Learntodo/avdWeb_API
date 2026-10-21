@@ -6,7 +6,7 @@ Web API จัดการลูกค้าและรายการสั่
 ## วิธีรัน
 
 1. แก้ไฟล์ `dbconnect.ts` ใส่ host / user / password / database ของฐานข้อมูล (ค่าเดียวกับใน `avdWeb/backend/.env`)
-2. สร้างตารางในฐานข้อมูล: รัน `sql/schema.sql` → `sql/users.sql` → `sql/routes.sql` ใน phpMyAdmin / MySQL Workbench / DBeaver (ทำครั้งเดียว)
+2. สร้างตารางในฐานข้อมูล: รัน `sql/schema.sql` → `sql/users.sql` → `sql/routes.sql` → `sql/simulate.sql` ใน phpMyAdmin / MySQL Workbench / DBeaver (ทำครั้งเดียว)
 3. ตั้งค่า `JWT_SECRET` (ค่าสุ่มยาวๆ ใช้เซ็นตั๋ว login) ถ้าไม่ตั้ง เซิร์ฟเวอร์จะไม่ยอมเปิด
    - รันในเครื่อง: สร้างไฟล์ `.env` ใส่บรรทัด `JWT_SECRET=ค่าสุ่ม` (ไฟล์ `.env` ไม่ขึ้น GitHub)
    - บน Vercel: Settings → Environment Variables เพิ่ม `JWT_SECRET`
@@ -62,6 +62,22 @@ Web API จัดการลูกค้าและรายการสั่
 
 `/routes` ใช้ได้เฉพาะเจ้าของร้าน
 
+## ระบบจำลองข้อมูล (ใช้ทดสอบระบบผ่านหน้าเว็บ)
+
+ข้อมูลที่จำลองมี `is_simulated = 1` (ตาราง customers, orders, users) ล้างทิ้งได้ทีเดียวโดยไม่กระทบข้อมูลจริง
+ลำดับทดสอบ: จำลองลูกค้า → จำลองไรเดอร์ → จำลองออเดอร์ของวันที่เลือก → จัดเส้นทาง → เปิดใบงาน → จำลองส่งเสร็จ → ล้างข้อมูลจำลอง
+
+| Method | Path | หน้าที่ |
+|---|---|---|
+| GET | /simulate?date=2026-10-21 | จำนวนข้อมูลจำลอง, สถานะออเดอร์และเลขใบงานของวันนั้น, รายชื่อไรเดอร์จำลอง |
+| POST | /simulate/customers | สร้างลูกค้าจำลอง `{ "count": 15 }` ที่อยู่สุ่มในระยะ 3 กม. จากร้าน |
+| POST | /simulate/riders | สร้างไรเดอร์จำลอง `{ "count": 5 }` เบอร์ 0990000001, 0990000002, ... รหัสผ่าน `123456` |
+| POST | /orders/simulate | จำลองออเดอร์ `{ "date": "2026-10-21", "count": 25 }` (ไม่ส่งมา = วันนี้ 20–30 รายการ) สุ่มจากลูกค้าในระยะ 3 กม. |
+| POST | /simulate/deliver | จำลองไรเดอร์ส่งเสร็จ `{ "date": "2026-10-21" }` ออเดอร์ "กำลังส่ง" ของวันนั้นเป็น "ส่งแล้ว" |
+| DELETE | /simulate | ล้างข้อมูลจำลองทั้งหมด (ใบงานที่มีออเดอร์จำลอง, ออเดอร์, ลูกค้า, ไรเดอร์จำลอง) |
+
+`/simulate` ใช้ได้เฉพาะเจ้าของร้าน
+
 ## ความปลอดภัย
 
 - SQL ทุกคำสั่งใช้ `?` (ป้องกัน SQL Injection), รหัสผ่านเก็บแบบ bcrypt, JWT บังคับ HS256 + issuer
@@ -80,13 +96,13 @@ Web API จัดการลูกค้าและรายการสั่
 | 2.2 | GET | /customers/search?name=สม | ค้นหาจากส่วนหนึ่งของชื่อหรือนามสกุล |
 | 2.3 | GET | /customers/nearby?lat=16.246&lng=103.25 | ลูกค้าในระยะ 1 กม. จากพิกัด (มี `distance_km`) |
 | 3.1.3 | POST | /orders | เพิ่มรายการสั่งซื้อทีละ 1 รายการ `{ "customer_id": 1, "quantity": 2, "unit_price": 65 }` (ที่อยู่/พิกัดใช้ของลูกค้าถ้าไม่ส่งมา, ไม่ส่งราคา = 65) |
-| 3.1 | POST | /orders/simulate | จำลองรายการสั่งซื้อ 20–30 รายการ (สุ่มจากลูกค้าในระบบ 1–3 กล่อง) |
+| 3.1 | POST | /orders/simulate | จำลองรายการสั่งซื้อ 20–30 รายการ (สุ่มจากลูกค้าในระยะ 3 กม. จากร้าน 1–3 กล่อง) |
 | 3.1 | GET | /orders | แสดงรายการสั่งซื้อทั้งหมด พร้อมข้อมูลลูกค้าที่สั่งและจำนวนกล่อง |
 | 3.1 | GET | /orders/{id} | แสดงรายการสั่งซื้อ 1 รายการ พร้อมข้อมูลลูกค้าที่สั่ง |
 | 3.1.3 | PATCH | /orders/{id} | แก้จำนวนกล่อง `{ "quantity": 2 }` เพิ่ม `{ "change": 1 }` ลด `{ "change": -1 }` |
 | 3.1.3 | PUT | /orders/{id} | แก้ไขรายการ ส่งเฉพาะฟิลด์ที่จะแก้ เช่น `{ "unit_price": 70, "note": "ไม่ใส่ผัก" }` (เปลี่ยน `customer_id` ไม่ได้) |
 | 3.1.3 | DELETE | /orders/{id} | ลบรายการสั่งซื้อ 1 รายการ |
-| 3.2 | DELETE | /orders/simulate | ล้างรายการสั่งซื้อที่จำลองทั้งหมด |
+| 3.2 | DELETE | /orders/simulate | ล้างรายการสั่งซื้อที่จำลองทั้งหมด (ใบงานที่มีออเดอร์จำลองถูกลบด้วย) |
 | 3.3 | GET | /orders/nearby?lat=16.246&lng=103.25 | รายการสั่งซื้อในระยะ 2 กม. จากพิกัด (มี `distance_km`) |
 
 ผลลัพธ์:
@@ -115,9 +131,10 @@ dbconnect.ts         Connection Pool ของ MySQL (createPool)
 jwtauth.ts           สร้างตั๋ว / ตรวจตั๋ว JWT / ให้เข้าเฉพาะเจ้าของร้าน (ownerOnly)
 limiter.ts           จำกัดจำนวนครั้งที่เรียก API ต่อเครื่อง (กันเดารหัสผ่าน / เลขใบงาน)
 planner.ts           คำนวณเส้นทางส่ง แบ่งออเดอร์ให้ไรเดอร์ และสรุปค่าใช้จ่าย
-controller/          index.ts, customer.ts, order.ts, auth.ts, rider.ts, route.ts, job.ts
+controller/          index.ts, customer.ts, order.ts, auth.ts, rider.ts, route.ts, job.ts, simulate.ts
 model/               customer.ts, order.ts, user.ts, route.ts (interface)
 sql/schema.sql       ตาราง customers และ orders
 sql/users.sql        ตาราง users (เจ้าของร้าน + ไรเดอร์) และบัญชีเจ้าของร้าน
 sql/routes.sql       ตาราง routes (ใบงาน) และ route_stops (จุดส่งในใบงาน)
+sql/simulate.sql     คอลัมน์ is_simulated ของ customers และ users (แยกข้อมูลจำลอง)
 ```

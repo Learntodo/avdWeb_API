@@ -8,6 +8,7 @@ export interface Customer {
   address: string;
   latitude: number;
   longitude: number;
+  is_simulated?: number; // 1 = ลูกค้าจำลอง (ล้างทิ้งได้ด้วย DELETE /simulate)
   created_at: string;
   updated_at: string;
 }

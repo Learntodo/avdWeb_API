@@ -4,6 +4,9 @@ import mysql from "mysql2";
 import { conn } from "../dbconnect";
 import { Customer } from "../model/customer";
 import { Order } from "../model/order";
+import { readDate } from "./route";
+import { readCount, SIM_RADIUS_KM } from "./simulate";
+import { SHOP } from "../planner";
 
 export const router = express.Router();
 
@@ -15,11 +18,29 @@ export function thaiDate(value?: string) {
 }
 
 // 3.1 จำลองรายการสั่งซื้อ 20-30 รายการ (สุ่มลูกค้าที่มีอยู่ และจำนวน 1-3 กล่อง)
+// สุ่มเฉพาะลูกค้าที่อยู่ในระยะส่ง 3 กม. จากร้าน (นอกระยะ ไรเดอร์ส่งไม่ทัน 12:30 จัดเส้นทางไม่ได้)
+// body ไม่บังคับ: { "date": "2026-10-21", "count": 25 } ไม่ส่ง date = วันนี้, ไม่ส่ง count = สุ่ม 20-30
 router.post("/simulate", async (req, res) => {
   try {
-    const [rows] = await conn.query("SELECT * FROM customers");
+    const body = req.body || {};
+    const date = readDate(body.date);
+    if (date === null) {
+      return res.status(400).json({ error: "date ต้องเป็นรูปแบบ YYYY-MM-DD" });
+    }
+    const count = readCount(body.count, 20 + Math.floor(Math.random() * 11), 50);
+    if (count === null) {
+      return res.status(400).json({ error: "count ต้องเป็นจำนวนเต็ม 1-50" });
+    }
+    const [rows] = await conn.query(
+      "SELECT *, 6371 * 2 * ASIN(SQRT(POWER(SIN(RADIANS(latitude - ?) / 2), 2)" +
+        " + COS(RADIANS(?)) * COS(RADIANS(latitude)) * POWER(SIN(RADIANS(longitude - ?) / 2), 2))) AS distance_km" +
+        " FROM customers HAVING distance_km <= ?",
+      [SHOP.lat, SHOP.lat, SHOP.lng, SIM_RADIUS_KM]
+    );
     const customers = rows as Customer[];
-    const count = 20 + Math.floor(Math.random() * 11);
+    if (customers.length === 0) {
+      return res.status(400).json({ error: `ไม่มีลูกค้าในระยะ ${SIM_RADIUS_KM} กม. จากร้าน (จำลองลูกค้าก่อน)` });
+    }
     let affected = 0;
     for (let i = 0; i < count; i++) {
       const customer = customers[Math.floor(Math.random() * customers.length)] as Customer;
@@ -32,7 +53,7 @@ router.post("/simulate", async (req, res) => {
         customer.address,
         customer.latitude,
         customer.longitude,
-        thaiDate(),
+        date,
       ]);
       const insertResult = result as any;
       affected += insertResult.affectedRows;
@@ -124,6 +145,18 @@ router.patch("/:id", async (req, res) => {
 // 3.2 ล้าง (ลบทั้งหมด) รายการสั่งซื้อที่จำลอง
 router.delete("/simulate", async (req, res) => {
   try {
+    // ใบงานที่มีออเดอร์จำลองอยู่ ลบทิ้งด้วย (ไม่งั้นใบงานเหลือจุดส่งไม่ครบ) ออเดอร์จริงในใบงานนั้นกลับเป็น "รอส่ง"
+    const [rows] = await conn.query(
+      "SELECT DISTINCT route_stops.route_id FROM route_stops JOIN orders ON orders.id = route_stops.order_id WHERE orders.is_simulated = 1"
+    );
+    const routeIds = (rows as any[]).map((r) => r.route_id);
+    if (routeIds.length > 0) {
+      await conn.query(
+        "UPDATE orders SET status = 'pending' WHERE status = 'delivering' AND id IN (SELECT order_id FROM route_stops WHERE route_id IN (?))",
+        [routeIds]
+      );
+      await conn.query("DELETE FROM routes WHERE id IN (?)", [routeIds]);
+    }
     const [result] = await conn.query("DELETE FROM orders WHERE is_simulated = 1");
     const deleteResult = result as any;
     res.status(200).json({ affected_row: deleteResult.affectedRows });

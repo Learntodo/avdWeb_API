@@ -8,6 +8,7 @@ import { router as auth } from "./controller/auth";
 import { router as rider } from "./controller/rider";
 import { router as route } from "./controller/route";
 import { router as job } from "./controller/job";
+import { router as simulate } from "./controller/simulate";
 import { jwtAuthen, jwtError, ownerOnly } from "./jwtauth";
 import { limiter } from "./limiter";
 
@@ -58,6 +59,7 @@ app.use("/customers", ownerOnly, customer);
 app.use("/orders", ownerOnly, order);
 app.use("/riders", ownerOnly, rider);
 app.use("/routes", ownerOnly, route);
+app.use("/simulate", ownerOnly, simulate);
 
 // ดัก Error ที่เหลือทั้งหมด ตอบเป็น JSON สั้นๆ ไม่ส่งรายละเอียดโค้ด (stack trace) ออกไป
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

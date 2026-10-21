@@ -10,7 +10,7 @@ import { RouteResult, StopResult } from "../model/route";
 export const router = express.Router();
 
 // ตรวจรูปแบบวันที่ YYYY-MM-DD (ไม่ส่งมา = วันนี้ตามเวลาไทย) ผิดรูปแบบคืนค่า null
-function readDate(value: unknown): string | null {
+export function readDate(value: unknown): string | null {
   if (value === undefined || value === "") return thaiDate();
   if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
   return null;
