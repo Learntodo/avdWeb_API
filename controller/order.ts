@@ -48,23 +48,17 @@ router.post("/simulate", async (req, res) => {
       customers[i] = customers[j] as Customer;
       customers[j] = temp;
     }
-    let affected = 0;
+    const values = [];
     for (let i = 0; i < count; i++) {
       const customer = customers[i % customers.length] as Customer;
       const quantity = 1 + Math.floor(Math.random() * 3);
-      let sql =
-        "INSERT INTO `orders`(`customer_id`, `quantity`, `delivery_address`, `delivery_latitude`, `delivery_longitude`, `delivery_date`, `is_simulated`) VALUES (?,?,?,?,?,?,1)";
-      const [result] = await conn.query(sql, [
-        customer.id,
-        quantity,
-        customer.address,
-        customer.latitude,
-        customer.longitude,
-        date,
-      ]);
-      const insertResult = result as any;
-      affected += insertResult.affectedRows;
+      values.push([customer.id, quantity, customer.address, customer.latitude, customer.longitude, date, 1]);
     }
+    // เพิ่มทุกรายการในคำสั่งเดียว (เร็วกว่าเพิ่มทีละรายการมาก)
+    let sql =
+      "INSERT INTO `orders`(`customer_id`, `quantity`, `delivery_address`, `delivery_latitude`, `delivery_longitude`, `delivery_date`, `is_simulated`) VALUES ?";
+    const [result] = await conn.query(sql, [values]);
+    const affected = (result as any).affectedRows;
     res.status(201).json({ affected_row: affected });
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
@@ -122,6 +116,13 @@ router.get("/", async (req, res) => {
   }
 });
 
+// ออเดอร์นี้อยู่ในใบงานไรเดอร์แล้วหรือยัง (อยู่แล้ว ห้ามแก้จำนวน / ที่อยู่ / วันส่ง และห้ามลบ ไม่งั้นใบงานไม่ตรงกับออเดอร์)
+async function inRoute(id: number | string): Promise<boolean> {
+  const [rows] = await conn.query("SELECT id FROM route_stops WHERE order_id = ?", [id]);
+  return (rows as any[]).length > 0;
+}
+const IN_ROUTE_ERROR = "ออเดอร์นี้อยู่ในใบงานไรเดอร์แล้ว แก้ไขไม่ได้ (ยกเลิกใบงานในหน้าจัดเส้นทางก่อน)";
+
 // 3.1.3 เพิ่ม / ลด / แก้ไข จำนวนกล่อง
 // { "quantity": 3 } = แก้เป็น 3 กล่อง, { "change": 1 } = เพิ่ม 1 กล่อง, { "change": -1 } = ลด 1 กล่อง
 router.patch("/:id", async (req, res) => {
@@ -137,6 +138,9 @@ router.patch("/:id", async (req, res) => {
     // ต้องเป็นจำนวนเต็มเท่านั้น (จำนวนกล่องเกิน 1-3 ฐานข้อมูลจะไม่ยอมบันทึก)
     if (!Number.isInteger(value)) {
       return res.status(400).json({ error: "quantity / change ต้องเป็นจำนวนเต็ม" });
+    }
+    if (await inRoute(id)) {
+      return res.status(400).json({ error: IN_ROUTE_ERROR });
     }
     const [result] = await conn.query(sql, [value, id]);
     const updateResult = result as any;
@@ -239,6 +243,21 @@ router.put("/:id", async (req, res) => {
     }
     updateOrder.delivery_date = thaiDate(updateOrder.delivery_date);
 
+    // อยู่ในใบงานแล้ว: เปลี่ยนได้แค่ "กำลังส่ง" <-> "ส่งแล้ว" และหมายเหตุ
+    if (await inRoute(id)) {
+      const same =
+        updateOrder.quantity == orderOriginal.quantity &&
+        updateOrder.unit_price == orderOriginal.unit_price &&
+        updateOrder.delivery_address === orderOriginal.delivery_address &&
+        updateOrder.delivery_latitude == orderOriginal.delivery_latitude &&
+        updateOrder.delivery_longitude == orderOriginal.delivery_longitude &&
+        updateOrder.delivery_date === thaiDate(orderOriginal.delivery_date) &&
+        ["delivering", "delivered"].includes(updateOrder.status);
+      if (!same) {
+        return res.status(400).json({ error: IN_ROUTE_ERROR });
+      }
+    }
+
     // 3. เขียนข้อมูลที่รวมแล้วกลับลงฐานข้อมูล
     sql =
       "UPDATE `orders` SET `quantity`=?, `unit_price`=?, `delivery_address`=?, `delivery_latitude`=?, `delivery_longitude`=?, `delivery_date`=?, `status`=?, `note`=? WHERE `id`=?";
@@ -265,6 +284,9 @@ router.put("/:id", async (req, res) => {
 router.delete("/:id", async (req, res) => {
   try {
     let id = req.params.id;
+    if (await inRoute(id)) {
+      return res.status(400).json({ error: IN_ROUTE_ERROR });
+    }
     const [result] = await conn.query("DELETE FROM orders WHERE id = ?", [id]);
     const deleteResult = result as any;
     if (deleteResult.affectedRows === 0) {

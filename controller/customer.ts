@@ -71,6 +71,12 @@ router.put("/:id", async (req, res) => {
 router.delete("/:id", async (req, res) => {
   try {
     let id = req.params.id;
+    // ลูกค้าที่มีออเดอร์อยู่ ลบไม่ได้ (ฐานข้อมูลไม่ยอมให้ลบ) บอกเหตุผลให้ชัดแทน error 500
+    const [orders] = await conn.query("SELECT COUNT(*) AS count FROM orders WHERE customer_id = ?", [id]);
+    const orderCount = Number((orders as any[])[0].count);
+    if (orderCount > 0) {
+      return res.status(400).json({ error: `ลูกค้าคนนี้มีออเดอร์ ${orderCount} รายการ ลบไม่ได้ (ลบออเดอร์ของลูกค้าก่อน)` });
+    }
     const [result] = await conn.query("DELETE FROM customers WHERE id = ?", [id]);
     const deleteResult = result as any;
     if (deleteResult.affectedRows === 0) {

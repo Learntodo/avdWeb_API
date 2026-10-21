@@ -20,6 +20,7 @@ export const STOP_MINUTES = 5; // เวลาจอดส่งของแต�
 // ข้อมูลออเดอร์ที่ใช้คำนวณ (มาจากตาราง orders JOIN customers)
 export interface PlanOrder {
   id: number;
+  customer_id: number;
   first_name: string;
   last_name: string;
   phone: string;
@@ -122,6 +123,7 @@ export function measureRoute(orders: PlanOrder[]): RouteResult {
     stops.push({
       seq: i + 1,
       order_id: o.id,
+      customer_id: o.customer_id,
       first_name: o.first_name,
       last_name: o.last_name,
       phone: o.phone,
@@ -175,10 +177,14 @@ let memo = new Map<string, RouteResult>();
 // หาลำดับการส่งที่ดีที่สุดของ 1 เที่ยว: ลองทุกลำดับ เลือกที่ไม่เลท และค่าไรเดอร์น้อยสุด
 // (ค่าไรเดอร์คิดตามระยะทั้งรอบ ลำดับที่ระยะสั้นสุดจึงถูกสุด เช่น จุดใกล้ร้านส่งก่อน)
 function bestRoute(orders: PlanOrder[]): RouteResult {
-  const key = orders
-    .map((o) => o.id)
-    .sort((a, b) => a - b)
-    .join(",");
+  // ชื่อกลุ่ม = รหัสออเดอร์เรียงจากน้อยไปมาก (มีไม่เกิน 3 ตัว เรียงเองแบบง่ายๆ เร็วกว่า sort)
+  let a = orders[0]?.id ?? 0;
+  let b = orders[1]?.id ?? 0;
+  let c = orders[2]?.id ?? 0;
+  if (a > b) [a, b] = [b, a];
+  if (b > c) [b, c] = [c, b];
+  if (a > b) [a, b] = [b, a];
+  const key = a + "," + b + "," + c;
   const saved = memo.get(key);
   if (saved) return saved;
   let best: RouteResult | null = null;
@@ -205,42 +211,110 @@ function groupCost(route: RouteResult): number {
 // 1) เริ่มจากให้ไรเดอร์ 1 คนต่อ 1 ออเดอร์
 // 2) รวมกลุ่มที่อยู่ใกล้กันเข้าด้วยกัน ถ้ารวมแล้วค่าไรเดอร์รวมลดลง (วิธี Savings) จนรวมต่อไม่ได้
 // 3) ลองย้าย / สลับออเดอร์ระหว่างไรเดอร์ ถ้าค่าใช้จ่ายลดลงก็เปลี่ยน
+// 4) จำนวนเที่ยวต้องไม่เกินจำนวนไรเดอร์ที่มี (maxRoutes) ถ้าเกินให้ยุบเที่ยวรวมกัน
 // random = true จะสุ่มเลือกการรวมจาก 3 อันดับแรก เพื่อให้ได้เส้นทางแบบอื่นมาเสนอ
-function buildRoutes(orders: PlanOrder[], random: boolean): RouteResult[] {
+function buildRoutes(orders: PlanOrder[], random: boolean, maxRoutes: number): RouteResult[] {
   let routes: RouteResult[] = orders.map((o) => bestRoute([o]));
 
-  // ขั้นที่ 2 รวมกลุ่ม
-  while (true) {
-    const merges: { i: number; j: number; saving: number; route: RouteResult }[] = [];
-    for (let i = 0; i < routes.length; i++) {
-      for (let j = i + 1; j < routes.length; j++) {
-        const a = routes[i] as RouteResult;
-        const b = routes[j] as RouteResult;
-        if (a.order_ids.length + b.order_ids.length > MAX_ORDERS) continue;
-        const merged = bestRoute(ordersOf(orders, [...a.order_ids, ...b.order_ids]));
-        if (merged.late_orders > 0) continue;
-        const saving = groupCost(a) + groupCost(b) - groupCost(merged);
-        if (saving > 0.01) merges.push({ i: i, j: j, saving: saving, route: merged });
-      }
+  // ขั้นที่ 2 รวมกลุ่ม: คิดผลประหยัดของทุกคู่ไว้ก่อน รวมคู่ที่ประหยัดสุด แล้วคิดเพิ่มเฉพาะคู่ของกลุ่มใหม่ (เร็วกว่าคิดใหม่ทุกคู่)
+  type Merge = { a: RouteResult; b: RouteResult; saving: number; route: RouteResult };
+  const tryMerge = (a: RouteResult, b: RouteResult): Merge | null => {
+    if (a.order_ids.length + b.order_ids.length > MAX_ORDERS) return null;
+    const merged = bestRoute(ordersOf(orders, [...a.order_ids, ...b.order_ids]));
+    if (merged.late_orders > 0) return null;
+    const saving = groupCost(a) + groupCost(b) - groupCost(merged);
+    return saving > 0.01 ? { a: a, b: b, saving: saving, route: merged } : null;
+  };
+  let merges: Merge[] = [];
+  for (let i = 0; i < routes.length; i++) {
+    for (let j = i + 1; j < routes.length; j++) {
+      const m = tryMerge(routes[i] as RouteResult, routes[j] as RouteResult);
+      if (m) merges.push(m);
     }
-    if (merges.length === 0) break;
+  }
+  while (merges.length > 0) {
     merges.sort((x, y) => y.saving - x.saving);
     const pick = random ? Math.floor(Math.random() * Math.min(3, merges.length)) : 0;
-    const m = merges[pick] as (typeof merges)[number];
-    routes = routes.filter((_, k) => k !== m.i && k !== m.j);
+    const m = merges[pick] as Merge;
+    routes = routes.filter((r) => r !== m.a && r !== m.b);
+    merges = merges.filter((x) => x.a !== m.a && x.a !== m.b && x.b !== m.a && x.b !== m.b);
+    for (const r of routes) {
+      const x = tryMerge(r, m.route);
+      if (x) merges.push(x);
+    }
     routes.push(m.route);
   }
 
   // ขั้นที่ 3 ปรับปรุงด้วยการย้าย / สลับออเดอร์
+  routes = improve(orders, routes);
+
+  // ขั้นที่ 4 ไรเดอร์มีไม่พอ: ยุบเที่ยวที่เล็กที่สุด กระจายออเดอร์ไปใส่เที่ยวอื่นที่ยังรับได้ จนเหลือเท่าจำนวนไรเดอร์
+  if (routes.length > maxRoutes) {
+    while (routes.length > maxRoutes) {
+      const smaller = reduceOne(orders, routes);
+      if (smaller === null) break; // ยุบไม่ได้แล้ว (ส่งไม่ทันเวลา) แผนนี้ใช้ไม่ได้
+      routes = smaller;
+    }
+    routes = improve(orders, routes);
+  }
+  return routes;
+}
+
+// ลองยุบ 1 เที่ยว: เอาออเดอร์ของเที่ยวนั้นไปใส่เที่ยวอื่นที่ยังไม่เต็ม 3 ออเดอร์ (ต้องไม่เลท)
+// ลองจากเที่ยวที่มีออเดอร์น้อยสุดก่อน ได้แบบที่ค่าไรเดอร์รวมน้อยสุด คืนค่า null ถ้ายุบไม่ได้เลย
+function reduceOne(orders: PlanOrder[], routes: RouteResult[]): RouteResult[] | null {
+  let best: RouteResult[] | null = null;
+  let bestCost = Infinity;
+  for (let k = 0; k < routes.length; k++) {
+    const removed = routes[k] as RouteResult;
+    let rest = routes.filter((_, i) => i !== k);
+    let ok = true;
+    for (const id of removed.order_ids) {
+      // ใส่ออเดอร์ id ในเที่ยวที่ค่าใช้จ่ายเพิ่มน้อยสุด
+      let pickIndex = -1;
+      let pickRoute: RouteResult | null = null;
+      let pickAdd = Infinity;
+      for (let i = 0; i < rest.length; i++) {
+        const r = rest[i] as RouteResult;
+        if (r.order_ids.length >= MAX_ORDERS) continue;
+        const merged = bestRoute(ordersOf(orders, [...r.order_ids, id]));
+        if (merged.late_orders > 0) continue;
+        const add = merged.rider_cost - r.rider_cost;
+        if (add < pickAdd) {
+          pickAdd = add;
+          pickIndex = i;
+          pickRoute = merged;
+        }
+      }
+      if (pickRoute === null) {
+        ok = false;
+        break;
+      }
+      rest = rest.map((r, i) => (i === pickIndex ? (pickRoute as RouteResult) : r));
+    }
+    if (!ok) continue;
+    const cost = rest.reduce((sum, r) => sum + groupCost(r), 0);
+    if (cost < bestCost) {
+      bestCost = cost;
+      best = rest;
+    }
+  }
+  return best;
+}
+
+// ลองย้าย / สลับออเดอร์ระหว่างไรเดอร์ ถ้าค่าใช้จ่ายลดลงก็เปลี่ยนทันที แล้วลองคู่ต่อไป ไล่ซ้ำจนลดไม่ได้อีก
+function improve(orders: PlanOrder[], start: RouteResult[]): RouteResult[] {
+  const routes: (RouteResult | null)[] = [...start]; // null = เที่ยวที่ถูกย้ายออเดอร์ออกหมดแล้ว
   let improved = true;
   while (improved) {
     improved = false;
-    for (let i = 0; i < routes.length && !improved; i++) {
-      for (let j = 0; j < routes.length && !improved; j++) {
-        if (i === j) continue;
-        const a = routes[i] as RouteResult;
-        const b = routes[j] as RouteResult;
+    for (let i = 0; i < routes.length; i++) {
+      for (let j = 0; j < routes.length; j++) {
+        const a = routes[i];
+        const b = routes[j];
+        if (i === j || !a || !b) continue;
         const before = groupCost(a) + groupCost(b);
+        let changed = false;
         for (const idA of a.order_ids) {
           // ย้ายออเดอร์ idA จากเที่ยว a ไปเที่ยว b
           if (b.order_ids.length < MAX_ORDERS) {
@@ -249,10 +323,9 @@ function buildRoutes(orders: PlanOrder[], random: boolean): RouteResult[] {
             const newA = restA.length > 0 ? bestRoute(ordersOf(orders, restA)) : null;
             const after = groupCost(newB) + (newA ? groupCost(newA) : 0);
             if (after < before - 0.01) {
-              routes = routes.filter((_, k) => k !== i && k !== j);
-              routes.push(newB);
-              if (newA) routes.push(newA);
-              improved = true;
+              routes[i] = newA;
+              routes[j] = newB;
+              changed = true;
               break;
             }
           }
@@ -261,25 +334,33 @@ function buildRoutes(orders: PlanOrder[], random: boolean): RouteResult[] {
             const newA = bestRoute(ordersOf(orders, [...a.order_ids.filter((id) => id !== idA), idB]));
             const newB = bestRoute(ordersOf(orders, [...b.order_ids.filter((id) => id !== idB), idA]));
             if (groupCost(newA) + groupCost(newB) < before - 0.01) {
-              routes = routes.filter((_, k) => k !== i && k !== j);
-              routes.push(newA, newB);
-              improved = true;
+              routes[i] = newA;
+              routes[j] = newB;
+              changed = true;
               break;
             }
           }
-          if (improved) break;
+          if (changed) break;
         }
+        if (changed) improved = true;
       }
     }
   }
-  return routes;
+  return routes.filter((r) => r !== null) as RouteResult[];
 }
 
 // ดึงข้อมูลออเดอร์ตามรหัสที่ให้มา (เรียงตามรหัสที่ให้)
+// (จำตาราง รหัส -> ออเดอร์ ของแต่ละชุดไว้ ไม่ต้องไล่หาทีละตัวทุกครั้ง)
+const orderTables = new WeakMap<PlanOrder[], Map<number, PlanOrder>>();
 export function ordersOf(orders: PlanOrder[], ids: number[]): PlanOrder[] {
+  let table = orderTables.get(orders);
+  if (!table) {
+    table = new Map(orders.map((o) => [o.id, o]));
+    orderTables.set(orders, table);
+  }
   const result: PlanOrder[] = [];
   for (const id of ids) {
-    const order = orders.find((o) => o.id === id);
+    const order = table.get(id);
     if (order) result.push(order);
   }
   return result;
@@ -327,14 +408,17 @@ export function summarize(routes: RouteResult[]): PlanResult {
   };
 }
 
-// เสนอแผนเส้นทาง 3 แบบ (ค่าใช้จ่ายน้อยสุดก่อน)
+// เสนอแผนเส้นทาง 3 แบบ (ค่าใช้จ่ายน้อยสุดก่อน) ใช้ไรเดอร์ไม่เกิน maxRoutes คน (หาแผนไม่ได้ คืนค่า [])
 // round = ครั้งที่กด "คำนวณใหม่" (0 = ครั้งแรก) ครั้งถัดไปจะเสนอแผนอันดับถัดไปที่ต่างจากเดิม
-export function makePlans(orders: PlanOrder[], round: number): PlanResult[] {
+export function makePlans(orders: PlanOrder[], round: number, maxRoutes: number): PlanResult[] {
   memo = new Map<string, RouteResult>();
   const found: PlanResult[] = [];
   const seen: string[] = [];
-  for (let i = 0; i < 80; i++) {
-    const plan = summarize(buildRoutes(orders, i > 0)); // รอบแรกไม่สุ่ม รอบต่อไปสุ่ม
+  const startTime = Date.now();
+  // คิด 80 แบบ แต่ถ้าออเดอร์เยอะจนใช้เวลาเกิน 3 วินาที หยุดก่อน (ตอบให้เร็ว ไม่ให้ server ตัดเพราะช้าเกิน)
+  for (let i = 0; i < 80 && (i < 5 || Date.now() - startTime < 3000); i++) {
+    const plan = summarize(buildRoutes(orders, i > 0, maxRoutes)); // รอบแรกไม่สุ่ม รอบต่อไปสุ่ม
+    if (plan.riders > maxRoutes) continue; // ไรเดอร์ไม่พอสำหรับแผนนี้
     // แผนที่แบ่งกลุ่มเหมือนกันนับเป็นแผนเดียว
     const key = plan.routes
       .map((r) => [...r.order_ids].sort((a, b) => a - b).join(","))

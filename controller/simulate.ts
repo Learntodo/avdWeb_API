@@ -56,22 +56,20 @@ router.get("/", async (req, res) => {
     if (date === null) {
       return res.status(400).json({ error: "date ต้องเป็นรูปแบบ YYYY-MM-DD" });
     }
-    const [counts] = await conn.query(
-      "SELECT (SELECT COUNT(*) FROM customers WHERE is_simulated = 1) AS customers," +
-        " (SELECT COUNT(*) FROM orders WHERE is_simulated = 1) AS orders," +
-        " (SELECT COUNT(*) FROM users WHERE role = 'rider' AND is_simulated = 1) AS riders"
-    );
-    const [statuses] = await conn.query(
-      "SELECT status, COUNT(*) AS count FROM orders WHERE delivery_date = ? GROUP BY status",
-      [date]
-    );
-    const [riders] = await conn.query(
-      "SELECT id, phone, first_name, last_name, license_plate FROM users WHERE role = 'rider' AND is_simulated = 1 ORDER BY phone"
-    );
-    const [routes] = await conn.query(
-      "SELECT route_no, code FROM routes WHERE delivery_date = ? ORDER BY route_no",
-      [date]
-    );
+    // ถามฐานข้อมูล 4 คำถามพร้อมกัน (ไม่ต้องรอทีละคำถาม)
+    const [[counts], [statuses], [riders], [routes]] = await Promise.all([
+      conn.query(
+        "SELECT (SELECT COUNT(*) FROM customers WHERE is_simulated = 1) AS customers," +
+          " (SELECT COUNT(*) FROM orders WHERE is_simulated = 1) AS orders," +
+          " (SELECT COUNT(*) FROM users WHERE role = 'rider' AND is_simulated = 1) AS riders," +
+          " (SELECT COUNT(*) FROM users WHERE role = 'rider' AND is_active = 1) AS active_riders"
+      ),
+      conn.query("SELECT status, COUNT(*) AS count FROM orders WHERE delivery_date = ? GROUP BY status", [date]),
+      conn.query(
+        "SELECT id, phone, first_name, last_name, license_plate FROM users WHERE role = 'rider' AND is_simulated = 1 ORDER BY phone"
+      ),
+      conn.query("SELECT route_no, code FROM routes WHERE delivery_date = ? ORDER BY route_no", [date]),
+    ]);
     const day: any = { pending: 0, delivering: 0, delivered: 0, cancelled: 0 };
     for (const row of statuses as any[]) {
       day[row.status] = row.count;
@@ -104,19 +102,20 @@ router.post("/customers", async (req, res) => {
       }
     }
     names.sort(() => Math.random() - 0.5);
-    let affected = 0;
+    const values = [];
     for (let i = 0; i < count; i++) {
       const point = randomPoint();
       const name = names[i % names.length] as string[];
       const phone = "08" + String(randomInt(0, 99999999)).padStart(8, "0");
       const address = `${pick(PLACES)} ห้อง ${randomInt(101, 450)} ต.ขามเรียง อ.กันทรวิชัย จ.มหาสารคาม`;
-      let sql =
-        "INSERT INTO `customers`(`first_name`, `last_name`, `phone`, `email`, `address`, `latitude`, `longitude`, `is_simulated`) VALUES (?,?,?,?,?,?,?,1)";
-      const [result] = await conn.query(sql, [name[0], name[1], phone, null, address, point.lat, point.lng]);
-      const insertResult = result as any;
-      affected += insertResult.affectedRows;
+      values.push([name[0], name[1], phone, null, address, point.lat, point.lng, 1]);
     }
-    res.status(201).json({ affected_row: affected });
+    // เพิ่มทุกคนในคำสั่งเดียว (เร็วกว่าเพิ่มทีละคนมาก เพราะฐานข้อมูลอยู่ไกล)
+    let sql =
+      "INSERT INTO `customers`(`first_name`, `last_name`, `phone`, `email`, `address`, `latitude`, `longitude`, `is_simulated`) VALUES ?";
+    const [result] = await conn.query(sql, [values]);
+    const insertResult = result as any;
+    res.status(201).json({ affected_row: insertResult.affectedRows });
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }
@@ -134,17 +133,20 @@ router.post("/riders", async (req, res) => {
     const used = (rows as any[]).map((r) => r.phone);
     const hash = await bcrypt.hash(SIM_RIDER_PASSWORD, 10);
     const phones: string[] = [];
+    const values = [];
     let no = 1;
     while (phones.length < count && no <= 99999) {
       const phone = SIM_RIDER_PHONE + String(no).padStart(5, "0");
       no = no + 1;
       if (used.includes(phone)) continue;
       const plate = `${randomInt(1, 9)}${pick(PLATE_LETTERS)} ${randomInt(1000, 9999)}`;
-      let sql =
-        "INSERT INTO `users`(`phone`, `password`, `role`, `first_name`, `last_name`, `license_plate`, `is_simulated`) VALUES (?,?,'rider',?,?,?,1)";
-      await conn.query(sql, [phone, hash, pick(FIRST_NAMES), pick(LAST_NAMES), plate]);
+      values.push([phone, hash, "rider", pick(FIRST_NAMES), pick(LAST_NAMES), plate, 1]);
       phones.push(phone);
     }
+    // เพิ่มทุกคนในคำสั่งเดียว
+    let sql =
+      "INSERT INTO `users`(`phone`, `password`, `role`, `first_name`, `last_name`, `license_plate`, `is_simulated`) VALUES ?";
+    await conn.query(sql, [values]);
     res.status(201).json({ affected_row: phones.length, phones: phones, password: SIM_RIDER_PASSWORD });
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
