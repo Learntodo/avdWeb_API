@@ -96,14 +96,23 @@ router.post("/customers", async (req, res) => {
     if (count === null) {
       return res.status(400).json({ error: "count ต้องเป็นจำนวนเต็ม 1-50" });
     }
+    // จับคู่ชื่อ-นามสกุลทุกแบบแล้วสุ่มลำดับ ลูกค้าในรอบเดียวกันจะได้ชื่อไม่ซ้ำกัน
+    const names: string[][] = [];
+    for (const first of FIRST_NAMES) {
+      for (const last of LAST_NAMES) {
+        names.push([first, last]);
+      }
+    }
+    names.sort(() => Math.random() - 0.5);
     let affected = 0;
     for (let i = 0; i < count; i++) {
       const point = randomPoint();
+      const name = names[i % names.length] as string[];
       const phone = "08" + String(randomInt(0, 99999999)).padStart(8, "0");
       const address = `${pick(PLACES)} ห้อง ${randomInt(101, 450)} ต.ขามเรียง อ.กันทรวิชัย จ.มหาสารคาม`;
       let sql =
         "INSERT INTO `customers`(`first_name`, `last_name`, `phone`, `email`, `address`, `latitude`, `longitude`, `is_simulated`) VALUES (?,?,?,?,?,?,?,1)";
-      const [result] = await conn.query(sql, [pick(FIRST_NAMES), pick(LAST_NAMES), phone, null, address, point.lat, point.lng]);
+      const [result] = await conn.query(sql, [name[0], name[1], phone, null, address, point.lat, point.lng]);
       const insertResult = result as any;
       affected += insertResult.affectedRows;
     }

@@ -13,7 +13,7 @@ export const RIDER_PER_KM_BOX = 2; // ค่าส่ง 2 บาท ต่อ �
 export const BOX_COST = 40; // ต้นทุนข้าวกล่องละ 40 บาท
 
 // ---------- ค่าที่สมมติเพิ่ม (แก้ได้) ----------
-export const ROAD_FACTOR = 1.3; // ถนนจริงอ้อมกว่าเส้นตรง จึงคูณระยะเส้นตรงเพิ่ม 30%
+export const ROAD_FACTOR = 1.3; // ใช้เมื่อโหลดระยะถนนจริงไม่ได้: ถนนอ้อมกว่าเส้นตรง จึงคูณระยะเส้นตรงเพิ่ม 30%
 export const STOP_MINUTES = 5; // เวลาจอดส่งของแต่ละจุด (นาที)
 // ระยะทางที่ใช้คิดค่าส่ง = จากร้านไปจุดส่งจุดสุดท้าย (ไม่นับขากลับร้าน)
 
@@ -30,8 +30,58 @@ export interface PlanOrder {
   total_price: number;
 }
 
-// ระยะทางถนนโดยประมาณ (กม.) ระหว่าง 2 พิกัด: สูตร Haversine (ระยะเส้นตรงบนผิวโลก) x ROAD_FACTOR
+// ---------- ระยะทางตามถนนจริง ----------
+// ใช้บริการ OSRM (แผนที่ถนนจาก OpenStreetMap ฟรี) คิดระยะขับรถจริงระหว่างทุกคู่จุดในครั้งเดียว
+export const ROAD_API = "https://router.project-osrm.org";
+// ระยะถนนจริงที่โหลดมาแล้ว (กม.) เก็บตามคู่พิกัด เช่น "16.246000,103.250000>16.250000,103.260000"
+let roadKm = new Map<string, number>();
+
+function pointKey(lat: number, lng: number): string {
+  return Number(lat).toFixed(6) + "," + Number(lng).toFixed(6);
+}
+
+// โหลดระยะถนนจริงระหว่างทุกคู่จุด (ร้าน + จุดส่ง) จาก OSRM ด้วยคำขอเดียว (table service)
+// สำเร็จคืนค่า true, เชื่อมต่อไม่ได้ / ช้าเกิน 6 วินาที คืนค่า false แล้วระบบใช้ระยะโดยประมาณแทน
+export async function loadRoadDistances(points: { lat: number; lng: number }[]): Promise<boolean> {
+  // ตัดจุดซ้ำ (ลูกค้าคนเดียวกันสั่งหลายออเดอร์) และใส่ร้านเป็นจุดแรก
+  const keys: string[] = [pointKey(SHOP.lat, SHOP.lng)];
+  const list = [SHOP];
+  for (const p of points) {
+    const key = pointKey(p.lat, p.lng);
+    if (!keys.includes(key)) {
+      keys.push(key);
+      list.push(p);
+    }
+  }
+  // เคยโหลดครบทุกคู่แล้ว (เช่น กดคำนวณใหม่ / ยืนยันแผน) ไม่ต้องโหลดซ้ำ
+  if (keys.every((a) => keys.every((b) => roadKm.has(a + ">" + b)))) return true;
+  if (list.length > 100) return false; // OSRM รับได้ไม่เกิน 100 จุดต่อครั้ง
+  try {
+    const coords = list.map((p) => `${Number(p.lng)},${Number(p.lat)}`).join(";");
+    const response = await fetch(`${ROAD_API}/table/v1/driving/${coords}?annotations=distance`, {
+      signal: AbortSignal.timeout(6000),
+    });
+    const data: any = await response.json();
+    if (!response.ok || data.code !== "Ok") return false;
+    if (roadKm.size > 50000) roadKm = new Map<string, number>(); // ไม่ให้หน่วยความจำเต็ม
+    for (let i = 0; i < keys.length; i++) {
+      for (let j = 0; j < keys.length; j++) {
+        const meters = data.distances[i][j];
+        // ไปไม่ถึงทางถนน (null) ไม่เก็บ ให้ใช้ระยะโดยประมาณแทน
+        if (typeof meters === "number") roadKm.set(keys[i] + ">" + keys[j], meters / 1000);
+      }
+    }
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+// ระยะทาง (กม.) จากจุดที่ 1 ไปจุดที่ 2
+// มีระยะถนนจริงจาก OSRM ใช้ค่านั้น ไม่มีใช้สูตร Haversine (ระยะเส้นตรงบนผิวโลก) x ROAD_FACTOR
 export function distanceKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const road = roadKm.get(pointKey(lat1, lng1) + ">" + pointKey(lat2, lng2));
+  if (road !== undefined) return road;
   const toRad = (deg: number) => (deg * Math.PI) / 180;
   const dLat = toRad(lat2 - lat1);
   const dLng = toRad(lng2 - lng1);

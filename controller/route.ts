@@ -4,7 +4,7 @@ import express from "express";
 import crypto from "crypto";
 import { conn } from "../dbconnect";
 import { thaiDate } from "./order";
-import { makePlans, measureRoute, ordersOf, summarize, PlanOrder, MAX_ORDERS, BOX_COST } from "../planner";
+import { makePlans, measureRoute, ordersOf, summarize, loadRoadDistances, PlanOrder, MAX_ORDERS, BOX_COST } from "../planner";
 import { RouteResult, StopResult } from "../model/route";
 
 export const router = express.Router();
@@ -14,6 +14,11 @@ export function readDate(value: unknown): string | null {
   if (value === undefined || value === "") return thaiDate();
   if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
   return null;
+}
+
+// โหลดระยะถนนจริงของร้านและทุกจุดส่ง (true = ได้ระยะถนนจริง, false = ใช้ระยะโดยประมาณ)
+function loadRoads(orders: PlanOrder[]): Promise<boolean> {
+  return loadRoadDistances(orders.map((o) => ({ lat: o.delivery_latitude, lng: o.delivery_longitude })));
 }
 
 // ออเดอร์ของวันที่เลือกที่ยังต้องส่ง (รอส่ง / กำลังส่ง) พร้อมชื่อและเบอร์ลูกค้า
@@ -98,7 +103,7 @@ export async function savedRoutes(by: "date" | "code", value: string) {
   return routes;
 }
 
-// POST /routes/plan คำนวณแผนเส้นทาง (ยังไม่บันทึก) body: { "date": "2026-10-20", "round": 0 }
+// POST /routes/plan คำนวณแผนเส้นทาง (ยังไม่บันทึก) ใช้ระยะตามถนนจริง body: { "date": "2026-10-20", "round": 0 }
 // ตอบ 3 แผนเรียงจากค่าใช้จ่ายน้อยสุด, round = ครั้งที่กดคำนวณใหม่ (ได้แผนอื่นมาเสนอ)
 router.post("/plan", async (req, res) => {
   try {
@@ -114,7 +119,9 @@ router.post("/plan", async (req, res) => {
     if (orders.length === 0) {
       return res.status(404).json({ error: "ไม่มีออเดอร์ที่ต้องส่งในวันนี้" });
     }
-    res.json({ date: date, plans: makePlans(orders, round) });
+    const road = await loadRoads(orders);
+    // road_distance: true = ระยะตามถนนจริง, false = ระยะโดยประมาณ (เชื่อมต่อแผนที่ถนนไม่ได้)
+    res.json({ date: date, road_distance: road, plans: makePlans(orders, round) });
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }
@@ -154,6 +161,7 @@ router.post("/", async (req, res) => {
     if (orders.length !== ids.length || !orders.every((o) => ids.includes(o.id))) {
       return res.status(400).json({ error: "แผนไม่ตรงกับออเดอร์ปัจจุบัน กรุณาคำนวณใหม่" });
     }
+    await loadRoads(orders);
     const plan = summarize(list.map((route: number[]) => measureRoute(ordersOf(orders, route))));
     if (plan.late_orders > 0) {
       return res.status(400).json({ error: "แผนนี้มีจุดที่ส่งเกิน 12:30 น." });

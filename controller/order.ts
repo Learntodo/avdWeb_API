@@ -41,9 +41,16 @@ router.post("/simulate", async (req, res) => {
     if (customers.length === 0) {
       return res.status(400).json({ error: `ไม่มีลูกค้าในระยะ ${SIM_RADIUS_KM} กม. จากร้าน (จำลองลูกค้าก่อน)` });
     }
+    // สลับลำดับลูกค้าแบบสุ่ม แล้วไล่หยิบทีละคน (ลูกค้าพอ = ไม่มีใครได้ 2 ออเดอร์ในรอบเดียว)
+    for (let i = customers.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const temp = customers[i] as Customer;
+      customers[i] = customers[j] as Customer;
+      customers[j] = temp;
+    }
     let affected = 0;
     for (let i = 0; i < count; i++) {
-      const customer = customers[Math.floor(Math.random() * customers.length)] as Customer;
+      const customer = customers[i % customers.length] as Customer;
       const quantity = 1 + Math.floor(Math.random() * 3);
       let sql =
         "INSERT INTO `orders`(`customer_id`, `quantity`, `delivery_address`, `delivery_latitude`, `delivery_longitude`, `delivery_date`, `is_simulated`) VALUES (?,?,?,?,?,?,1)";
