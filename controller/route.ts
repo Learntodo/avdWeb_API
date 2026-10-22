@@ -1,5 +1,6 @@
 // API จัดเส้นทางส่ง /routes (เฉพาะเจ้าของร้าน)
 // คำนวณแผน -> เจ้าของร้านเลือกแผน -> บันทึกเป็นใบงาน (ผูกกับไรเดอร์ในระบบ มีเลขใบงานให้ไรเดอร์)
+// ส่งได้หลายรอบต่อวัน: ออเดอร์ใหม่ที่ยังไม่อยู่ในใบงาน จัดเป็นรอบใหม่ ให้ไรเดอร์ที่ว่าง (ส่งรอบก่อนเสร็จแล้ว) รับไป
 import express from "express";
 import crypto from "crypto";
 import { conn } from "../dbconnect";
@@ -33,13 +34,14 @@ function loadRoads(orders: PlanOrder[]): Promise<boolean> {
   return loadRoadDistances(orders.map((o) => ({ lat: o.delivery_latitude, lng: o.delivery_longitude })));
 }
 
-// ออเดอร์ของวันที่เลือกที่ยังต้องส่ง (รอส่ง / กำลังส่ง) พร้อมชื่อและเบอร์ลูกค้า
+// ออเดอร์ "รอส่ง" ของวันที่เลือกที่ยังไม่อยู่ในใบงาน (ต้องจัดเส้นทางรอบใหม่) พร้อมชื่อและเบอร์ลูกค้า
 async function loadOrders(date: string): Promise<PlanOrder[]> {
   const [rows] = await conn.query(
     "SELECT orders.id, orders.customer_id, customers.first_name, customers.last_name, customers.phone, orders.delivery_address," +
       " orders.delivery_latitude, orders.delivery_longitude, orders.quantity, orders.total_price" +
       " FROM orders JOIN customers ON customers.id = orders.customer_id" +
-      " WHERE orders.delivery_date = ? AND orders.status IN ('pending', 'delivering') ORDER BY orders.id",
+      " WHERE orders.delivery_date = ? AND orders.status = 'pending'" +
+      " AND orders.id NOT IN (SELECT order_id FROM route_stops) ORDER BY orders.id",
     [date]
   );
   return rows as PlanOrder[];
@@ -53,32 +55,49 @@ async function activeRiders(): Promise<RouteRider[]> {
   return rows as RouteRider[];
 }
 
-// จำนวนออเดอร์ในใบงานของวันนั้นที่ส่งถึงแล้ว (ส่งไปแล้ว ห้ามยกเลิก / จัดใหม่ทับ)
-async function deliveredCount(date: string): Promise<number> {
+// ไรเดอร์ที่ว่าง (รับใบงานรอบใหม่ได้) = เปิดใช้งานอยู่ และไม่มีใบงานของวันนั้นที่ยังส่งไม่ครบ
+async function freeRiders(date: string): Promise<RouteRider[]> {
   const [rows] = await conn.query(
-    "SELECT COUNT(*) AS count FROM routes JOIN route_stops ON route_stops.route_id = routes.id" +
-      " JOIN orders ON orders.id = route_stops.order_id WHERE routes.delivery_date = ? AND orders.status = 'delivered'",
+    "SELECT id, first_name, last_name, phone FROM users WHERE role = 'rider' AND is_active = 1 AND id NOT IN" +
+      " (SELECT routes.rider_id FROM routes JOIN route_stops ON route_stops.route_id = routes.id" +
+      " JOIN orders ON orders.id = route_stops.order_id" +
+      " WHERE routes.delivery_date = ? AND routes.rider_id IS NOT NULL AND orders.status = 'delivering') ORDER BY id",
     [date]
+  );
+  return rows as RouteRider[];
+}
+
+// จำนวนจุดในใบงานนี้ที่ส่งถึงแล้ว (ส่งไปแล้ว ห้ามยกเลิก / เปลี่ยนไรเดอร์)
+async function deliveredCount(routeId: number): Promise<number> {
+  const [rows] = await conn.query(
+    "SELECT COUNT(*) AS count FROM route_stops JOIN orders ON orders.id = route_stops.order_id" +
+      " WHERE route_stops.route_id = ? AND orders.status = 'delivered'",
+    [routeId]
   );
   return Number((rows as any[])[0].count);
 }
 
-// ตรวจก่อนจัดเส้นทาง: ส่งของไปแล้วหรือยัง, มีออเดอร์ไหม, ไรเดอร์พอไหม (ผ่านคืนค่า null, ไม่ผ่านคืนข้อความ)
-async function checkBeforePlan(date: string, orders: PlanOrder[], riders: RouteRider[]): Promise<string | null> {
-  if ((await deliveredCount(date)) > 0) {
-    return "วันนี้ไรเดอร์เริ่มส่งของแล้ว จัดเส้นทางใหม่ไม่ได้";
-  }
+// ตรวจก่อนจัดเส้นทาง: มีออเดอร์ใหม่ไหม, ไรเดอร์ว่างพอไหม (ผ่านคืนค่า null, ไม่ผ่านคืนข้อความ)
+async function checkBeforePlan(orders: PlanOrder[], free: RouteRider[]): Promise<string | null> {
   if (orders.length === 0) {
-    return "ไม่มีออเดอร์ที่ต้องส่งในวันนี้";
+    return "ไม่มีออเดอร์ใหม่ที่ต้องจัดเส้นทาง (ทุกออเดอร์อยู่ในใบงานแล้ว)";
   }
-  if (riders.length === 0) {
-    return "ยังไม่มีไรเดอร์ในระบบ กรุณาเพิ่มไรเดอร์ก่อน";
+  if (free.length === 0) {
+    const all = await activeRiders();
+    if (all.length === 0) return "ยังไม่มีไรเดอร์ในระบบ กรุณาเพิ่มไรเดอร์ก่อน";
+    return `ไรเดอร์ทั้ง ${all.length} คนกำลังออกส่งอยู่ รอไรเดอร์ส่งเสร็จก่อน หรือเพิ่มไรเดอร์`;
   }
   const need = Math.ceil(orders.length / MAX_ORDERS);
-  if (riders.length < need) {
-    return `ไรเดอร์ไม่พอ: มีออเดอร์ ${orders.length} รายการ ต้องใช้ไรเดอร์อย่างน้อย ${need} คน (ตอนนี้มี ${riders.length} คน)`;
+  if (free.length < need) {
+    return `ไรเดอร์ว่างไม่พอ: มีออเดอร์ ${orders.length} รายการ ต้องใช้ไรเดอร์อย่างน้อย ${need} คน (ตอนนี้ว่าง ${free.length} คน)`;
   }
   return null;
+}
+
+// เลขเที่ยวล่าสุดของวันนั้น (รอบใหม่นับต่อจากเลขนี้)
+async function lastRouteNo(date: string): Promise<number> {
+  const [rows] = await conn.query("SELECT MAX(route_no) AS last FROM routes WHERE delivery_date = ?", [date]);
+  return Number((rows as any[])[0].last ?? 0);
 }
 
 // สุ่มเลขใบงาน 8 ตัว (ตัด 0 O 1 I ที่อ่านสับสนออก) เดาสุ่มได้ยาก เพราะใช้เปิดดูใบงานโดยไม่ต้อง login
@@ -172,8 +191,9 @@ export async function savedRoutes(by: "date" | "code" | "rider", value: string |
   return routes;
 }
 
-// POST /routes/plan คำนวณแผนเส้นทาง (ยังไม่บันทึก) ใช้ระยะตามถนนจริง body: { "date": "2026-10-20", "round": 0 }
-// ตอบ 3 แผนเรียงจากค่าใช้จ่ายน้อยสุด ใช้ไรเดอร์ไม่เกินจำนวนที่มีในระบบ, round = ครั้งที่กดคำนวณใหม่ (ได้แผนอื่นมาเสนอ)
+// POST /routes/plan คำนวณแผนเส้นทางของออเดอร์ที่ยังไม่อยู่ในใบงาน (ยังไม่บันทึก) ใช้ระยะตามถนนจริง
+// body: { "date": "2026-10-20", "round": 0 }
+// ตอบ 3 แผนเรียงจากค่าใช้จ่ายน้อยสุด ใช้ไรเดอร์ไม่เกินจำนวนที่ว่าง, round = ครั้งที่กดคำนวณใหม่ (ได้แผนอื่นมาเสนอ)
 router.post("/plan", async (req, res) => {
   try {
     const body = req.body || {};
@@ -185,8 +205,8 @@ router.post("/plan", async (req, res) => {
     if (!Number.isInteger(round) || round < 0 || round > 1000) round = 0;
 
     const orders = await loadOrders(date);
-    const riders = await activeRiders();
-    const problem = await checkBeforePlan(date, orders, riders);
+    const riders = await freeRiders(date);
+    const problem = await checkBeforePlan(orders, riders);
     if (problem !== null) {
       return res.status(400).json({ error: problem });
     }
@@ -194,8 +214,13 @@ router.post("/plan", async (req, res) => {
     const plans = makePlans(orders, round, riders.length);
     if (plans.length === 0) {
       return res.status(400).json({
-        error: `ไรเดอร์ ${riders.length} คนส่งให้ถึงภายใน 1 ชั่วโมงไม่ได้ กรุณาเพิ่มไรเดอร์`,
+        error: `ไรเดอร์ที่ว่าง ${riders.length} คนส่งให้ถึงภายใน 1 ชั่วโมงไม่ได้ กรุณาเพิ่มไรเดอร์`,
       });
+    }
+    // เลขเที่ยวนับต่อจากรอบก่อนของวันเดียวกัน (ตรงกับเลขที่จะบันทึกจริง)
+    const last = await lastRouteNo(date);
+    for (const plan of plans) {
+      for (const route of plan.routes) route.route_no = route.route_no + last;
     }
     // road_distance: true = ระยะตามถนนจริง, false = ระยะโดยประมาณ (เชื่อมต่อแผนที่ถนนไม่ได้)
     res.json({ date: date, road_distance: road, riders_available: riders.length, plans: plans });
@@ -204,10 +229,10 @@ router.post("/plan", async (req, res) => {
   }
 });
 
-// POST /routes กด "ออกส่ง": ยืนยันแผนแล้วบันทึกเป็นใบงาน (แทนที่ใบงานเดิมของวันนั้น) และเปลี่ยนออเดอร์เป็น "กำลังส่ง"
+// POST /routes กด "ออกส่ง": ยืนยันแผนแล้วบันทึกเป็นใบงานรอบใหม่ (ใบงานรอบก่อนยังอยู่) และเปลี่ยนออเดอร์เป็น "กำลังส่ง"
 // เวลาที่กด = เวลาออกจากร้าน ทุกจุดต้องถึงภายใน 1 ชั่วโมงหลังจากนี้
 // body: { "date": "2026-10-20", "routes": [[5, 2], [7], [1, 9, 3]] } (รหัสออเดอร์ของแต่ละเที่ยว เรียงตามลำดับส่ง)
-// ระบบคำนวณระยะทาง / ค่าไรเดอร์ ใหม่เองทั้งหมด ไม่เชื่อตัวเลขที่ส่งมา และแจกใบงานให้ไรเดอร์ตามลำดับรหัส
+// ระบบคำนวณระยะทาง / ค่าไรเดอร์ ใหม่เองทั้งหมด ไม่เชื่อตัวเลขที่ส่งมา และแจกใบงานให้ไรเดอร์ที่ว่างตามลำดับรหัส
 router.post("/", async (req, res) => {
   try {
     const body = req.body || {};
@@ -234,10 +259,10 @@ router.post("/", async (req, res) => {
       }
     }
 
-    // ต้องครอบคลุมออเดอร์ที่ต้องส่งของวันนั้นครบทุกรายการพอดี และไรเดอร์ต้องพอ
+    // ต้องครอบคลุมออเดอร์ที่ยังไม่อยู่ในใบงานครบทุกรายการพอดี และไรเดอร์ที่ว่างต้องพอ
     const orders = await loadOrders(date);
-    const riders = await activeRiders();
-    const problem = await checkBeforePlan(date, orders, riders);
+    const riders = await freeRiders(date);
+    const problem = await checkBeforePlan(orders, riders);
     if (problem !== null) {
       return res.status(400).json({ error: problem });
     }
@@ -245,7 +270,7 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "แผนไม่ตรงกับออเดอร์ปัจจุบัน กรุณาคำนวณใหม่" });
     }
     if (list.length > riders.length) {
-      return res.status(400).json({ error: `แผนนี้ใช้ไรเดอร์ ${list.length} คน แต่มีไรเดอร์ ${riders.length} คน` });
+      return res.status(400).json({ error: `แผนนี้ใช้ไรเดอร์ ${list.length} คน แต่ว่างอยู่ ${riders.length} คน` });
     }
     await loadRoads(orders);
     // เวลาที่กดออกส่ง = เวลาออกจากร้าน คิดเวลาถึงแต่ละจุดจากตอนนี้
@@ -256,23 +281,24 @@ router.post("/", async (req, res) => {
     }
 
     // บันทึกทั้งหมดใน Transaction เดียว (ผิดพลาดตรงไหน ยกเลิกทั้งหมด)
+    const last = await lastRouteNo(date); // เลขเที่ยวนับต่อจากรอบก่อน
     const db = await conn.getConnection();
     const codes: { route_no: number; code: string; rider_id: number }[] = [];
     try {
       await db.beginTransaction();
-      await db.query("DELETE FROM routes WHERE delivery_date = ?", [date]);
       for (let i = 0; i < plan.routes.length; i++) {
         const route = plan.routes[i] as RouteResult;
-        const rider = riders[i] as RouteRider; // เที่ยวที่ 1 -> ไรเดอร์คนแรก, เที่ยวที่ 2 -> คนที่สอง, ...
+        const rider = riders[i] as RouteRider; // เที่ยวแรกของรอบ -> ไรเดอร์ที่ว่างคนแรก, เที่ยวที่สอง -> คนที่สอง, ...
+        const routeNo = last + route.route_no;
         const code = makeCode();
         const [result] = await db.query(
           "INSERT INTO `routes`(`code`, `delivery_date`, `route_no`, `rider_id`, `start_time`, `total_km`, `boxes`, `rider_cost`, `finish_time`) VALUES (?,?,?,?,?,?,?,?,?)",
-          [code, date, route.route_no, rider.id, toTime(start), route.total_km, route.boxes, route.rider_cost, route.finish_time]
+          [code, date, routeNo, rider.id, toTime(start), route.total_km, route.boxes, route.rider_cost, route.finish_time]
         );
         const routeId = (result as any).insertId;
         const stops = route.stops.map((s) => [routeId, s.order_id, s.seq, s.distance_km, s.eta]);
         await db.query("INSERT INTO `route_stops`(`route_id`, `order_id`, `seq`, `distance_km`, `eta`) VALUES ?", [stops]);
-        codes.push({ route_no: route.route_no, code: code, rider_id: rider.id });
+        codes.push({ route_no: routeNo, code: code, rider_id: rider.id });
       }
       await db.query("UPDATE orders SET status = 'delivering' WHERE id IN (?)", [ids]);
       await db.commit();
@@ -288,7 +314,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-// GET /routes?date=2026-10-20 ใบงานที่บันทึกไว้ของวันนั้น พร้อมไรเดอร์ เวลาออกส่ง และสรุปยอด
+// GET /routes?date=2026-10-20 ใบงานทุกรอบของวันนั้น พร้อมไรเดอร์ เวลาออกส่ง และสรุปยอดทั้งวัน
 router.get("/", async (req, res) => {
   try {
     const date = readDate(req.query.date);
@@ -297,11 +323,9 @@ router.get("/", async (req, res) => {
     }
     const routes = await savedRoutes("date", date);
     const riders = await activeRiders();
-    // ออเดอร์ "รอส่ง" ที่ยังไม่อยู่ในใบงาน (เช่น รับออเดอร์เพิ่มหลังจัดเส้นทางแล้ว)
-    const [waitRows] = await conn.query(
-      "SELECT COUNT(*) AS count FROM orders WHERE delivery_date = ? AND status = 'pending'",
-      [date]
-    );
+    const free = await freeRiders(date);
+    // ออเดอร์ "รอส่ง" ที่ยังไม่อยู่ในใบงาน (รับเพิ่มหลังออกส่งไปแล้ว -> จัดเป็นรอบใหม่)
+    const waiting = await loadOrders(date);
     let sales = 0;
     let riderCost = 0;
     let boxes = 0;
@@ -310,35 +334,55 @@ router.get("/", async (req, res) => {
     let delivered = 0;
     let finish = "";
     let finishMinutes = 0;
+    let finishAt = -1;
+    const riderIds: number[] = [];
+    // รอบที่ออกส่ง (ใบงานที่กดออกส่งพร้อมกัน = เวลาออกเดียวกัน)
+    const rounds: { start_time: string; routes: number; orders: number; delivered: number }[] = [];
     for (const r of routes) {
+      const done = r.stops.filter((s) => s.status === "delivered").length;
       sales = sales + r.sales;
       riderCost = riderCost + r.rider_cost;
       boxes = boxes + r.boxes;
       km = km + r.total_km;
       orders = orders + r.stops.length;
-      delivered = delivered + r.stops.filter((s) => s.status === "delivered").length;
-      if (finish === "" || r.finish_minutes > finishMinutes) {
+      delivered = delivered + done;
+      if (r.rider && !riderIds.includes(r.rider.id)) riderIds.push(r.rider.id);
+      // เวลาส่งเสร็จของทั้งวัน = จุดสุดท้ายของรอบที่ส่งเสร็จช้าที่สุด
+      const at = minutesBetween("00:00", r.start_time as string) + r.finish_minutes;
+      if (at > finishAt) {
+        finishAt = at;
         finish = r.finish_time;
         finishMinutes = r.finish_minutes;
       }
+      let round = rounds.find((x) => x.start_time === r.start_time);
+      if (!round) {
+        round = { start_time: r.start_time as string, routes: 0, orders: 0, delivered: 0 };
+        rounds.push(round);
+      }
+      round.routes = round.routes + 1;
+      round.orders = round.orders + r.stops.length;
+      round.delivered = round.delivered + done;
     }
+    rounds.sort((a, b) => a.start_time.localeCompare(b.start_time));
     res.json({
       date: date,
-      riders: routes.length,
+      riders: riderIds.length,
       riders_available: riders.length,
+      riders_free: free.length, // ไรเดอร์ที่ว่าง รับรอบใหม่ได้
       orders: orders,
-      delivered: delivered, // ส่งถึงแล้วกี่ออเดอร์ (มากกว่า 0 = ยกเลิกใบงานไม่ได้)
-      waiting: Number((waitRows as any[])[0].count),
+      delivered: delivered, // ส่งถึงแล้วกี่ออเดอร์
+      waiting: waiting.length,
       boxes: boxes,
       total_km: Math.round(km * 100) / 100,
       sales: sales,
       food_cost: boxes * BOX_COST,
       rider_cost: Math.round(riderCost * 100) / 100,
       profit: Math.round((sales - boxes * BOX_COST - riderCost) * 100) / 100,
-      start_time: routes.length > 0 ? routes[0]!.start_time : null, // เวลาที่กดออกส่ง
+      start_time: rounds.length > 0 ? rounds[rounds.length - 1]!.start_time : null, // เวลาออกส่งรอบล่าสุด
       finish_time: finish,
       finish_minutes: finishMinutes,
       late_orders: routes.filter((r) => r.late_orders > 0).length,
+      rounds: rounds,
       routes: routes,
     });
   } catch (error) {
@@ -347,7 +391,7 @@ router.get("/", async (req, res) => {
 });
 
 // PUT /routes/{id} เปลี่ยนไรเดอร์ของใบงาน body: { "rider_id": 8 }
-// ถ้าไรเดอร์คนนั้นมีใบงานอื่นในวันเดียวกันอยู่แล้ว จะสลับใบงานกันให้
+// ถ้าไรเดอร์คนนั้นกำลังถือใบงานอื่นที่ยังไม่ได้เริ่มส่ง จะสลับใบงานกันให้
 router.put("/:id", async (req, res) => {
   try {
     const riderId = Number((req.body || {}).rider_id);
@@ -356,20 +400,29 @@ router.put("/:id", async (req, res) => {
     if (!route) {
       return res.status(404).json({ error: "Route not found" });
     }
-    if ((await deliveredCount(route.delivery_date)) > 0) {
-      return res.status(400).json({ error: "ไรเดอร์เริ่มส่งของแล้ว เปลี่ยนไรเดอร์ไม่ได้" });
+    if ((await deliveredCount(route.id)) > 0) {
+      return res.status(400).json({ error: "ไรเดอร์เริ่มส่งเที่ยวนี้แล้ว เปลี่ยนไรเดอร์ไม่ได้" });
     }
     const riders = await activeRiders();
     if (!riders.some((r) => r.id === riderId)) {
       return res.status(400).json({ error: "ไม่พบไรเดอร์คนนี้ หรือไรเดอร์ถูกปิดใช้งาน" });
     }
-    // สลับ: ใบงานเดิมของไรเดอร์คนใหม่ (ถ้ามี) ได้ไรเดอร์คนเก่าไปแทน
-    await conn.query("UPDATE routes SET rider_id = ? WHERE delivery_date = ? AND rider_id = ? AND id <> ?", [
-      route.rider_id,
-      route.delivery_date,
-      riderId,
-      route.id,
-    ]);
+    // ใบงานอื่นของไรเดอร์คนใหม่ในวันเดียวกันที่ยังส่งไม่ครบ (ไรเดอร์ไม่ว่าง)
+    const [busyRows] = await conn.query(
+      "SELECT DISTINCT routes.id FROM routes JOIN route_stops ON route_stops.route_id = routes.id" +
+        " JOIN orders ON orders.id = route_stops.order_id" +
+        " WHERE routes.delivery_date = ? AND routes.rider_id = ? AND routes.id <> ? AND orders.status = 'delivering'",
+      [route.delivery_date, riderId, route.id]
+    );
+    for (const busy of busyRows as any[]) {
+      if ((await deliveredCount(busy.id)) > 0) {
+        return res.status(400).json({ error: "ไรเดอร์คนนี้กำลังส่งเที่ยวอื่นอยู่ เลือกคนอื่น" });
+      }
+    }
+    // สลับ: ใบงานที่ไรเดอร์คนใหม่ถืออยู่ (ยังไม่เริ่มส่ง) ได้ไรเดอร์คนเก่าไปแทน
+    for (const busy of busyRows as any[]) {
+      await conn.query("UPDATE routes SET rider_id = ? WHERE id = ?", [route.rider_id, busy.id]);
+    }
     const [result] = await conn.query("UPDATE routes SET rider_id = ? WHERE id = ?", [riderId, route.id]);
     res.status(200).json({ affected_row: (result as any).affectedRows });
   } catch (error) {
@@ -377,23 +430,24 @@ router.put("/:id", async (req, res) => {
   }
 });
 
-// DELETE /routes?date=2026-10-20 ยกเลิกใบงานทั้งหมดของวันนั้น ออเดอร์ที่ "กำลังส่ง" กลับเป็น "รอส่ง"
+// DELETE /routes/{id} ยกเลิกใบงาน 1 เที่ยว ออเดอร์ในเที่ยวนั้นกลับเป็น "รอส่ง" (นำไปจัดรอบใหม่ได้)
 // ถ้าไรเดอร์ส่งของถึงลูกค้าไปแล้วบางจุด ยกเลิกไม่ได้
-router.delete("/", async (req, res) => {
+router.delete("/:id", async (req, res) => {
   try {
-    const date = readDate(req.query.date);
-    if (date === null) {
-      return res.status(400).json({ error: "date ต้องเป็นรูปแบบ YYYY-MM-DD" });
+    const [rows] = await conn.query("SELECT id FROM routes WHERE id = ?", [req.params.id]);
+    const route = (rows as any[])[0];
+    if (!route) {
+      return res.status(404).json({ error: "Route not found" });
     }
-    if ((await deliveredCount(date)) > 0) {
-      return res.status(400).json({ error: "ไรเดอร์ส่งของถึงลูกค้าไปแล้ว ยกเลิกใบงานไม่ได้" });
+    if ((await deliveredCount(route.id)) > 0) {
+      return res.status(400).json({ error: "ไรเดอร์ส่งของถึงลูกค้าไปแล้ว ยกเลิกเที่ยวนี้ไม่ได้" });
     }
     await conn.query(
       "UPDATE orders SET status = 'pending' WHERE status = 'delivering' AND id IN" +
-        " (SELECT route_stops.order_id FROM route_stops JOIN routes ON routes.id = route_stops.route_id WHERE routes.delivery_date = ?)",
-      [date]
+        " (SELECT order_id FROM route_stops WHERE route_id = ?)",
+      [route.id]
     );
-    const [result] = await conn.query("DELETE FROM routes WHERE delivery_date = ?", [date]);
+    const [result] = await conn.query("DELETE FROM routes WHERE id = ?", [route.id]);
     const deleteResult = result as any;
     res.status(200).json({ affected_row: deleteResult.affectedRows });
   } catch (error) {
