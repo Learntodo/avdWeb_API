@@ -5,7 +5,7 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import { conn } from "../dbconnect";
 import { readDate } from "./route";
-import { SHOP } from "../planner";
+import { ROAD_API, SHOP } from "../planner";
 
 export const router = express.Router();
 
@@ -40,13 +40,52 @@ export function readCount(value: unknown, fallback: number, max: number): number
 }
 
 // สุ่มพิกัดในวงกลมรัศมี SIM_RADIUS_KM รอบร้าน (ใช้รากที่สองของค่าสุ่ม ให้จุดกระจายทั่ววงกลม ไม่กองตรงกลาง)
-function randomPoint() {
-  const km = SIM_RADIUS_KM * Math.sqrt(Math.random());
+function randomPoint(radiusKm = SIM_RADIUS_KM) {
+  const km = radiusKm * Math.sqrt(Math.random());
   const angle = Math.random() * 2 * Math.PI;
   // 1 องศาละติจูด ≈ 111.32 กม., 1 องศาลองจิจูด ≈ 111.32 x cos(ละติจูด) กม.
   const lat = SHOP.lat + (km * Math.cos(angle)) / 111.32;
   const lng = SHOP.lng + (km * Math.sin(angle)) / (111.32 * Math.cos((SHOP.lat * Math.PI) / 180));
   return { lat: Math.round(lat * 1e7) / 1e7, lng: Math.round(lng * 1e7) / 1e7 };
+}
+
+// จุดสุ่มที่ห่างถนนเกินระยะนี้ (เมตร) ถือว่าอยู่กลางน้ำ / กลางทุ่ง ไม่มีบ้านคน ทิ้งไป
+const MAX_ROAD_METERS = 80;
+
+// สุ่มพิกัดลูกค้าให้อยู่ริมถนนจริง (ไม่ตกน้ำ ไม่อยู่กลางทุ่ง)
+// สุ่มจุดทีละชุด แล้วถาม OSRM (table service) ว่าจุดถนนที่ใกล้ที่สุดอยู่ตรงไหน ห่างกี่เมตร และขับรถจากร้านไปถึงไหม
+// จุดที่ใกล้ถนนพอ ใช้พิกัดบนถนนนั้นแทน / โหลดข้อมูลถนนไม่ได้ ใช้จุดสุ่มธรรมดาแทน
+async function roadPoints(count: number) {
+  const points: { lat: number; lng: number }[] = [];
+  const used = new Set<string>();
+  try {
+    for (let round = 0; round < 6 && points.length < count; round++) {
+      const list = [];
+      // สุ่มในรัศมีสั้นกว่า 3 กม. เล็กน้อย เลื่อนไปริมถนนแล้วจะได้ไม่เกิน 3 กม.
+      for (let i = 0; i < 99; i++) list.push(randomPoint(SIM_RADIUS_KM - MAX_ROAD_METERS / 1000)); // OSRM รับได้ไม่เกิน 100 จุด (ร้าน + 99 จุด)
+      const coords = [SHOP, ...list].map((p) => `${p.lng},${p.lat}`).join(";");
+      // sources = จุดสุ่มทุกจุด, destinations = ร้าน (จุดที่ 0) ได้ตาราง 99 x 1 ขนาดเล็ก
+      const sources = list.map((p, i) => i + 1).join(";");
+      const response = await fetch(`${ROAD_API}/table/v1/driving/${coords}?sources=${sources}&destinations=0&annotations=distance`, {
+        signal: AbortSignal.timeout(6000),
+      });
+      const data: any = await response.json();
+      if (!response.ok || data.code !== "Ok") break;
+      for (let i = 0; i < list.length && points.length < count; i++) {
+        const road = data.sources[i]; // จุดบนถนนที่ใกล้จุดสุ่มที่สุด location = [ลองจิจูด, ละติจูด]
+        if (road.distance > MAX_ROAD_METERS || typeof data.distances[i][0] !== "number") continue;
+        const point = { lat: Math.round(road.location[1] * 1e7) / 1e7, lng: Math.round(road.location[0] * 1e7) / 1e7 };
+        const key = point.lat + "," + point.lng;
+        if (used.has(key)) continue; // ลูกค้าคนละคนไม่อยู่จุดเดียวกัน
+        used.add(key);
+        points.push(point);
+      }
+    }
+  } catch (error) {
+    // เชื่อมต่อ OSRM ไม่ได้ ใช้จุดสุ่มธรรมดาเติมให้ครบด้านล่าง
+  }
+  while (points.length < count) points.push(randomPoint());
+  return points;
 }
 
 // GET /simulate?date=2026-10-21 สรุปข้อมูลจำลองที่มีอยู่ และสถานะออเดอร์ / ใบงานของวันที่เลือก
@@ -87,7 +126,7 @@ router.get("/", async (req, res) => {
   }
 });
 
-// POST /simulate/customers สร้างลูกค้าจำลอง (ที่อยู่สุ่มในระยะ 3 กม. จากร้าน) body: { "count": 15 }
+// POST /simulate/customers สร้างลูกค้าจำลอง (ที่อยู่สุ่มริมถนนในระยะ 3 กม. จากร้าน) body: { "count": 15 }
 router.post("/customers", async (req, res) => {
   try {
     const count = readCount((req.body || {}).count, 15, 50);
@@ -102,9 +141,10 @@ router.post("/customers", async (req, res) => {
       }
     }
     names.sort(() => Math.random() - 0.5);
+    const points = await roadPoints(count);
     const values = [];
     for (let i = 0; i < count; i++) {
-      const point = randomPoint();
+      const point = points[i] as { lat: number; lng: number };
       const name = names[i % names.length] as string[];
       const phone = "08" + String(randomInt(0, 99999999)).padStart(8, "0");
       const address = `${pick(PLACES)} ห้อง ${randomInt(101, 450)} ต.ขามเรียง อ.กันทรวิชัย จ.มหาสารคาม`;
