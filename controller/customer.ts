@@ -2,6 +2,7 @@
 import express from "express";
 import { conn } from "../dbconnect";
 import { Customer } from "../model/customer";
+import { outsideArea } from "../planner";
 
 export const router = express.Router();
 
@@ -19,6 +20,11 @@ router.get("/", async (req, res) => {
 router.post("/", async (req, res) => {
   try {
     let customer: Customer = req.body;
+    // บ้านลูกค้าต้องอยู่ในเขตส่ง 3 กม. จากร้าน
+    const outside = outsideArea(customer.latitude, customer.longitude, "บ้านลูกค้า");
+    if (outside !== null) {
+      return res.status(400).json({ error: outside });
+    }
     let sql =
       "INSERT INTO `customers`(`first_name`, `last_name`, `phone`, `email`, `address`, `latitude`, `longitude`) VALUES (?,?,?,?,?,?,?)";
     const [result] = await conn.query(sql, [
@@ -45,6 +51,11 @@ router.put("/:id", async (req, res) => {
   try {
     let id = req.params.id;
     let customer: Customer = req.body;
+    // บ้านลูกค้าต้องอยู่ในเขตส่ง 3 กม. จากร้าน
+    const outside = outsideArea(customer.latitude, customer.longitude, "บ้านลูกค้า");
+    if (outside !== null) {
+      return res.status(400).json({ error: outside });
+    }
     let sql =
       "UPDATE `customers` SET `first_name`=?, `last_name`=?, `phone`=?, `email`=?, `address`=?, `latitude`=?, `longitude`=? WHERE `id`=?";
     const [result] = await conn.query(sql, [

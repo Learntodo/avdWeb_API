@@ -5,12 +5,10 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import { conn } from "../dbconnect";
 import { readDate } from "./route";
-import { ROAD_API, SHOP } from "../planner";
+import { ROAD_API, SHOP, MAX_KM } from "../planner";
 
 export const router = express.Router();
 
-// รัศมีที่ร้านส่งได้ (กม. เส้นตรงจากร้าน) ตามโจทย์โปรเจกต์
-export const SIM_RADIUS_KM = 3;
 // รหัสผ่านของไรเดอร์จำลองทุกคน (ใช้ login ทดสอบหน้าไรเดอร์)
 export const SIM_RIDER_PASSWORD = "123456";
 // เบอร์ไรเดอร์จำลองเริ่มที่ 0990000001, 0990000002, ...
@@ -39,8 +37,8 @@ export function readCount(value: unknown, fallback: number, max: number): number
   return count;
 }
 
-// สุ่มพิกัดในวงกลมรัศมี SIM_RADIUS_KM รอบร้าน (ใช้รากที่สองของค่าสุ่ม ให้จุดกระจายทั่ววงกลม ไม่กองตรงกลาง)
-function randomPoint(radiusKm = SIM_RADIUS_KM) {
+// สุ่มพิกัดในวงกลมรัศมี MAX_KM รอบร้าน (ใช้รากที่สองของค่าสุ่ม ให้จุดกระจายทั่ววงกลม ไม่กองตรงกลาง)
+function randomPoint(radiusKm = MAX_KM) {
   const km = radiusKm * Math.sqrt(Math.random());
   const angle = Math.random() * 2 * Math.PI;
   // 1 องศาละติจูด ≈ 111.32 กม., 1 องศาลองจิจูด ≈ 111.32 x cos(ละติจูด) กม.
@@ -62,7 +60,7 @@ async function roadPoints(count: number) {
     for (let round = 0; round < 6 && points.length < count; round++) {
       const list = [];
       // สุ่มในรัศมีสั้นกว่า 3 กม. เล็กน้อย เลื่อนไปริมถนนแล้วจะได้ไม่เกิน 3 กม.
-      for (let i = 0; i < 99; i++) list.push(randomPoint(SIM_RADIUS_KM - MAX_ROAD_METERS / 1000)); // OSRM รับได้ไม่เกิน 100 จุด (ร้าน + 99 จุด)
+      for (let i = 0; i < 99; i++) list.push(randomPoint(MAX_KM - MAX_ROAD_METERS / 1000)); // OSRM รับได้ไม่เกิน 100 จุด (ร้าน + 99 จุด)
       const coords = [SHOP, ...list].map((p) => `${p.lng},${p.lat}`).join(";");
       // sources = จุดสุ่มทุกจุด, destinations = ร้าน (จุดที่ 0) ได้ตาราง 99 x 1 ขนาดเล็ก
       const sources = list.map((p, i) => i + 1).join(";");

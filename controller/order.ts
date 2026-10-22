@@ -5,8 +5,8 @@ import { conn } from "../dbconnect";
 import { Customer } from "../model/customer";
 import { Order } from "../model/order";
 import { readDate } from "./route";
-import { readCount, SIM_RADIUS_KM } from "./simulate";
-import { SHOP } from "../planner";
+import { readCount } from "./simulate";
+import { SHOP, MAX_KM, outsideArea } from "../planner";
 
 export const router = express.Router();
 
@@ -35,11 +35,11 @@ router.post("/simulate", async (req, res) => {
       "SELECT *, 6371 * 2 * ASIN(SQRT(POWER(SIN(RADIANS(latitude - ?) / 2), 2)" +
         " + COS(RADIANS(?)) * COS(RADIANS(latitude)) * POWER(SIN(RADIANS(longitude - ?) / 2), 2))) AS distance_km" +
         " FROM customers HAVING distance_km <= ?",
-      [SHOP.lat, SHOP.lat, SHOP.lng, SIM_RADIUS_KM]
+      [SHOP.lat, SHOP.lat, SHOP.lng, MAX_KM]
     );
     const customers = rows as Customer[];
     if (customers.length === 0) {
-      return res.status(400).json({ error: `ไม่มีลูกค้าในระยะ ${SIM_RADIUS_KM} กม. จากร้าน (จำลองลูกค้าก่อน)` });
+      return res.status(400).json({ error: `ไม่มีลูกค้าในระยะ ${MAX_KM} กม. จากร้าน (จำลองลูกค้าก่อน)` });
     }
     // สลับลำดับลูกค้าแบบสุ่ม แล้วไล่หยิบทีละคน (ลูกค้าพอ = ไม่มีใครได้ 2 ออเดอร์ในรอบเดียว)
     for (let i = customers.length - 1; i > 0; i--) {
@@ -82,6 +82,15 @@ router.post("/", async (req, res) => {
       return res.status(404).json({ error: "Customer not found" });
     }
     const customer = customers[0] as Customer;
+    // จุดส่งต้องอยู่ในเขตส่ง 3 กม. จากร้าน
+    const outside = outsideArea(
+      order.delivery_latitude ?? customer.latitude,
+      order.delivery_longitude ?? customer.longitude,
+      "จุดส่ง"
+    );
+    if (outside !== null) {
+      return res.status(400).json({ error: outside });
+    }
     let sql =
       "INSERT INTO `orders`(`customer_id`, `quantity`, `unit_price`, `delivery_address`, `delivery_latitude`, `delivery_longitude`, `delivery_date`, `note`) VALUES (?,?,?,?,?,?,?,?)";
     const [result] = await conn.query(sql, [
@@ -242,6 +251,16 @@ router.put("/:id", async (req, res) => {
       return res.status(400).json({ error: "status ต้องเป็น pending, delivering, delivered หรือ cancelled" });
     }
     updateOrder.delivery_date = thaiDate(updateOrder.delivery_date);
+    // ย้ายจุดส่ง: จุดใหม่ต้องอยู่ในเขตส่ง 3 กม. จากร้าน
+    if (
+      updateOrder.delivery_latitude != orderOriginal.delivery_latitude ||
+      updateOrder.delivery_longitude != orderOriginal.delivery_longitude
+    ) {
+      const outside = outsideArea(updateOrder.delivery_latitude, updateOrder.delivery_longitude, "จุดส่ง");
+      if (outside !== null) {
+        return res.status(400).json({ error: outside });
+      }
+    }
 
     // อยู่ในใบงานแล้ว: เปลี่ยนได้แค่ "กำลังส่ง" <-> "ส่งแล้ว" และหมายเหตุ
     if (await inRoute(id)) {

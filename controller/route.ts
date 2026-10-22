@@ -17,6 +17,8 @@ import {
   MAX_ORDERS,
   MAX_MINUTES,
   BOX_COST,
+  MAX_KM,
+  shopKm,
 } from "../planner";
 import { RouteResult, RouteRider, StopResult } from "../model/route";
 
@@ -34,8 +36,8 @@ function loadRoads(orders: PlanOrder[]): Promise<boolean> {
   return loadRoadDistances(orders.map((o) => ({ lat: o.delivery_latitude, lng: o.delivery_longitude })));
 }
 
-// ออเดอร์ "รอส่ง" ของวันที่เลือกที่ยังไม่อยู่ในใบงาน (ต้องจัดเส้นทางรอบใหม่) พร้อมชื่อและเบอร์ลูกค้า
-async function loadOrders(date: string): Promise<PlanOrder[]> {
+// ออเดอร์ "รอส่ง" ของวันที่เลือกที่ยังไม่อยู่ในใบงาน พร้อมชื่อและเบอร์ลูกค้า (รวมที่อยู่นอกเขตส่ง)
+async function waitingOrders(date: string): Promise<PlanOrder[]> {
   const [rows] = await conn.query(
     "SELECT orders.id, orders.customer_id, customers.first_name, customers.last_name, customers.phone, orders.delivery_address," +
       " orders.delivery_latitude, orders.delivery_longitude, orders.quantity, orders.total_price" +
@@ -45,6 +47,12 @@ async function loadOrders(date: string): Promise<PlanOrder[]> {
     [date]
   );
   return rows as PlanOrder[];
+}
+
+// ออเดอร์ที่ต้องจัดเส้นทางรอบใหม่ = รอส่ง ยังไม่อยู่ในใบงาน และอยู่ในเขตส่ง 3 กม. (นอกเขตไม่จัดให้)
+async function loadOrders(date: string): Promise<PlanOrder[]> {
+  const orders = await waitingOrders(date);
+  return orders.filter((o) => shopKm(o.delivery_latitude, o.delivery_longitude) <= MAX_KM);
 }
 
 // ไรเดอร์ที่เปิดใช้งานอยู่ (รับใบงานได้) เรียงตามรหัส
@@ -324,8 +332,10 @@ router.get("/", async (req, res) => {
     const routes = await savedRoutes("date", date);
     const riders = await activeRiders();
     const free = await freeRiders(date);
-    // ออเดอร์ "รอส่ง" ที่ยังไม่อยู่ในใบงาน (รับเพิ่มหลังออกส่งไปแล้ว -> จัดเป็นรอบใหม่)
-    const waiting = await loadOrders(date);
+    // ออเดอร์ "รอส่ง" ที่ยังไม่อยู่ในใบงาน (รับเพิ่มหลังออกส่งไปแล้ว -> จัดเป็นรอบใหม่) แยกที่อยู่นอกเขตส่งออกมา
+    const all = await waitingOrders(date);
+    const waiting = all.filter((o) => shopKm(o.delivery_latitude, o.delivery_longitude) <= MAX_KM);
+    const outside = all.filter((o) => shopKm(o.delivery_latitude, o.delivery_longitude) > MAX_KM);
     let sales = 0;
     let riderCost = 0;
     let boxes = 0;
@@ -372,6 +382,7 @@ router.get("/", async (req, res) => {
       orders: orders,
       delivered: delivered, // ส่งถึงแล้วกี่ออเดอร์
       waiting: waiting.length,
+      outside: outside.map((o) => o.id), // ออเดอร์ที่อยู่นอกเขตส่ง 3 กม. (ส่งไม่ได้ ต้องแก้จุดส่งหรือยกเลิก)
       boxes: boxes,
       total_km: Math.round(km * 100) / 100,
       sales: sales,

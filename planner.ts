@@ -89,6 +89,34 @@ export function distanceKm(lat1: number, lng1: number, lat2: number, lng2: numbe
   return 6371 * 2 * Math.asin(Math.sqrt(a)) * ROAD_FACTOR;
 }
 
+// ---------- เขตส่ง ----------
+// ร้านส่งได้เฉพาะลูกค้าที่อยู่ห่างร้าน (เส้นตรง) ไม่เกิน 3 กม.
+export const MAX_KM = 3;
+
+// ระยะเส้นตรง (กม.) จากร้านถึงพิกัดนี้ (สูตร Haversine)
+export function shopKm(lat: number, lng: number): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(Number(lat) - SHOP.lat);
+  const dLng = toRad(Number(lng) - SHOP.lng);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(SHOP.lat)) * Math.cos(toRad(Number(lat))) * Math.sin(dLng / 2) ** 2;
+  return 6371 * 2 * Math.asin(Math.sqrt(a));
+}
+
+// ตรวจพิกัดว่าอยู่ในเขตส่งไหม (อยู่ในเขตคืนค่า null, ไม่อยู่คืนข้อความบอกเหตุผล) place เช่น "บ้านลูกค้า", "จุดส่ง"
+export function outsideArea(lat: unknown, lng: unknown, place: string): string | null {
+  if (lat === null || lat === undefined || lat === "" || lng === null || lng === undefined || lng === "") {
+    return `กรุณาปักหมุด${place}บนแผนที่`;
+  }
+  if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) {
+    return `พิกัด${place}ไม่ถูกต้อง`;
+  }
+  const km = shopKm(Number(lat), Number(lng));
+  if (km > MAX_KM) {
+    return `${place}อยู่ห่างร้าน ${km.toFixed(1)} กม. เกินเขตส่ง ${MAX_KM} กม. ร้านส่งไม่ถึง`;
+  }
+  return null;
+}
+
 // แปลงนาทีนับจากเที่ยงคืนเป็นเวลา เช่น 702 -> "11:42" (เกินเที่ยงคืนวนกลับเป็น 00:xx)
 export function toTime(minutes: number): string {
   const total = Math.ceil(minutes);
