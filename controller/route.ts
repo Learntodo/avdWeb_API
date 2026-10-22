@@ -250,7 +250,7 @@ router.post("/", async (req, res) => {
     }
     const list = body.routes;
     if (!Array.isArray(list) || list.length === 0 || list.length > 500) {
-      return res.status(400).json({ error: "routes ต้องเป็นรายการเที่ยว" });
+      return res.status(400).json({ error: "routes ต้องเป็นรายการใบงาน" });
     }
 
     // ตรวจว่าทุกเที่ยวมี 1-3 ออเดอร์ และไม่มีออเดอร์ซ้ำ
@@ -275,7 +275,7 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: problem });
     }
     if (orders.length !== ids.length || !orders.every((o) => ids.includes(o.id))) {
-      return res.status(400).json({ error: "แผนไม่ตรงกับออเดอร์ปัจจุบัน กรุณาคำนวณใหม่" });
+      return res.status(400).json({ error: "มีออเดอร์เปลี่ยนไประหว่างนี้ กรุณากด “ให้ระบบจัดเส้นทาง” ใหม่อีกครั้ง" });
     }
     if (list.length > riders.length) {
       return res.status(400).json({ error: `แผนนี้ใช้ไรเดอร์ ${list.length} คน แต่ว่างอยู่ ${riders.length} คน` });
@@ -285,7 +285,7 @@ router.post("/", async (req, res) => {
     const start = nowMinutes();
     const plan = summarize(list.map((route: number[]) => measureRoute(ordersOf(orders, route), start)));
     if (plan.late_orders > 0) {
-      return res.status(400).json({ error: "แผนนี้มีจุดที่ส่งถึงเกิน 1 ชั่วโมง" });
+      return res.status(400).json({ error: "แผนนี้มีบ้านที่ส่งไม่ทันภายใน 1 ชั่วโมง" });
     }
 
     // บันทึกทั้งหมดใน Transaction เดียว (ผิดพลาดตรงไหน ยกเลิกทั้งหมด)
@@ -412,7 +412,7 @@ router.put("/:id", async (req, res) => {
       return res.status(404).json({ error: "Route not found" });
     }
     if ((await deliveredCount(route.id)) > 0) {
-      return res.status(400).json({ error: "ไรเดอร์เริ่มส่งเที่ยวนี้แล้ว เปลี่ยนไรเดอร์ไม่ได้" });
+      return res.status(400).json({ error: "ไรเดอร์เริ่มส่งใบงานนี้แล้ว เปลี่ยนคนส่งไม่ได้" });
     }
     const riders = await activeRiders();
     if (!riders.some((r) => r.id === riderId)) {
@@ -427,7 +427,7 @@ router.put("/:id", async (req, res) => {
     );
     for (const busy of busyRows as any[]) {
       if ((await deliveredCount(busy.id)) > 0) {
-        return res.status(400).json({ error: "ไรเดอร์คนนี้กำลังส่งเที่ยวอื่นอยู่ เลือกคนอื่น" });
+        return res.status(400).json({ error: "ไรเดอร์คนนี้กำลังออกส่งอยู่ ให้เลือกคนอื่น" });
       }
     }
     // สลับ: ใบงานที่ไรเดอร์คนใหม่ถืออยู่ (ยังไม่เริ่มส่ง) ได้ไรเดอร์คนเก่าไปแทน
@@ -451,7 +451,7 @@ router.delete("/:id", async (req, res) => {
       return res.status(404).json({ error: "Route not found" });
     }
     if ((await deliveredCount(route.id)) > 0) {
-      return res.status(400).json({ error: "ไรเดอร์ส่งของถึงลูกค้าไปแล้ว ยกเลิกเที่ยวนี้ไม่ได้" });
+      return res.status(400).json({ error: "ไรเดอร์ส่งของถึงลูกค้าไปแล้ว ยกเลิกใบงานนี้ไม่ได้" });
     }
     await conn.query(
       "UPDATE orders SET status = 'pending' WHERE status = 'delivering' AND id IN" +

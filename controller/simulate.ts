@@ -105,7 +105,11 @@ router.get("/", async (req, res) => {
       conn.query(
         "SELECT id, phone, first_name, last_name, license_plate FROM users WHERE role = 'rider' AND is_simulated = 1 ORDER BY phone"
       ),
-      conn.query("SELECT route_no, code FROM routes WHERE delivery_date = ? ORDER BY route_no", [date]),
+      conn.query(
+        "SELECT routes.route_no, routes.code, users.first_name FROM routes LEFT JOIN users ON users.id = routes.rider_id" +
+          " WHERE routes.delivery_date = ? ORDER BY routes.route_no",
+        [date]
+      ),
     ]);
     const day: any = { pending: 0, delivering: 0, delivered: 0, cancelled: 0 };
     for (const row of statuses as any[]) {
