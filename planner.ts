@@ -1,13 +1,12 @@
 // ระบบคิดเส้นทางส่งข้าวกล่อง: แบ่งออเดอร์ให้ไรเดอร์ (คนละไม่เกิน 3 ออเดอร์) และเรียงลำดับจุดส่ง
-// เป้าหมาย: ค่าไรเดอร์รวมน้อยที่สุด (= ร้านกำไรมากที่สุด) และทุกจุดต้องส่งถึงไม่เกิน 12:30 น.
+// เป้าหมาย: ค่าไรเดอร์รวมน้อยที่สุด (= ร้านกำไรมากที่สุด) และทุกจุดต้องส่งถึงภายใน 1 ชั่วโมงหลังกด "ออกส่ง"
 import { RouteResult, StopResult, PlanResult } from "./model/route";
 
 // ---------- ค่าคงที่ตามโจทย์ ----------
 export const SHOP = { lat: 16.246, lng: 103.25 }; // พิกัดร้าน (แถวมหาวิทยาลัยมหาสารคาม)
 export const MAX_ORDERS = 3; // ไรเดอร์ 1 คนรับได้ไม่เกิน 3 ออเดอร์
 export const SPEED_KMH = 30; // ไรเดอร์ขับประมาณ 30 กม./ชม.
-export const START_MIN = 11 * 60 + 30; // ออกจากร้าน 11:30 น. (เก็บเป็นนาทีนับจากเที่ยงคืน)
-export const DEADLINE_MIN = 12 * 60 + 30; // ต้องถึงลูกค้าไม่เกิน 12:30 น.
+export const MAX_MINUTES = 60; // ต้องถึงลูกค้าทุกจุดภายใน 60 นาที นับจากตอนกด "ออกส่ง" (ไม่ได้กำหนดเวลานาฬิกาตายตัว)
 export const RIDER_BASE = 15; // ค่าเรียกไรเดอร์ 15 บาทต่อครั้ง
 export const RIDER_PER_KM_BOX = 2; // ค่าส่ง 2 บาท ต่อ กม. ต่อ กล่อง
 export const BOX_COST = 40; // ต้นทุนข้าวกล่องละ 40 บาท
@@ -90,10 +89,10 @@ export function distanceKm(lat1: number, lng1: number, lat2: number, lng2: numbe
   return 6371 * 2 * Math.asin(Math.sqrt(a)) * ROAD_FACTOR;
 }
 
-// แปลงนาทีเป็นเวลา เช่น 702 -> "11:42"
+// แปลงนาทีนับจากเที่ยงคืนเป็นเวลา เช่น 702 -> "11:42" (เกินเที่ยงคืนวนกลับเป็น 00:xx)
 export function toTime(minutes: number): string {
   const total = Math.ceil(minutes);
-  const h = Math.floor(total / 60);
+  const h = Math.floor(total / 60) % 24;
   const m = total % 60;
   return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
 }
@@ -103,12 +102,21 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+// เวลาตอนนี้ตามเวลาไทย เป็นนาทีนับจากเที่ยงคืน (ใช้เป็นเวลาออกส่ง)
+export function nowMinutes(): number {
+  const [h, m] = new Date()
+    .toLocaleTimeString("en-GB", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", hour12: false })
+    .split(":");
+  return (Number(h) % 24) * 60 + Number(m);
+}
+
 // คำนวณรายละเอียดของ 1 เที่ยว ตามลำดับออเดอร์ที่ให้มา: ระยะทาง เวลาถึงแต่ละจุด ค่าไรเดอร์ กำไร
-export function measureRoute(orders: PlanOrder[]): RouteResult {
+// start = เวลาออกจากร้าน (นาทีนับจากเที่ยงคืน) ใช้แสดงเวลานาฬิกา, ตอนคิดแผนยังไม่ออกส่ง ใช้ 0 (ดูแค่นาทีที่ใช้)
+export function measureRoute(orders: PlanOrder[], start = 0): RouteResult {
   let lat = SHOP.lat;
   let lng = SHOP.lng;
   let km = 0;
-  let time = START_MIN;
+  let time = 0; // นาทีหลังออกจากร้าน
   let boxes = 0;
   let sales = 0;
   let late = 0;
@@ -119,7 +127,7 @@ export function measureRoute(orders: PlanOrder[]): RouteResult {
     const legKm = distanceKm(lat, lng, o.delivery_latitude, o.delivery_longitude);
     km = km + legKm;
     time = time + (legKm / SPEED_KMH) * 60; // เวลาขับ (นาที) = ระยะ / ความเร็ว x 60
-    if (time > DEADLINE_MIN) late = late + 1;
+    if (time > MAX_MINUTES) late = late + 1;
     stops.push({
       seq: i + 1,
       order_id: o.id,
@@ -132,7 +140,8 @@ export function measureRoute(orders: PlanOrder[]): RouteResult {
       longitude: o.delivery_longitude,
       quantity: o.quantity,
       distance_km: round2(legKm),
-      eta: toTime(time),
+      eta: toTime(start + time),
+      minutes: Math.ceil(time),
     });
     time = time + STOP_MINUTES; // จอดส่งของก่อนไปจุดถัดไป
     boxes = boxes + o.quantity;
@@ -153,7 +162,8 @@ export function measureRoute(orders: PlanOrder[]): RouteResult {
     food_cost: boxes * BOX_COST,
     rider_cost: round2(riderCost),
     profit: round2(sales - boxes * BOX_COST - riderCost),
-    finish_time: toTime(time - STOP_MINUTES),
+    finish_time: toTime(start + time - STOP_MINUTES),
+    finish_minutes: Math.ceil(time - STOP_MINUTES),
     late_orders: late,
   };
 }
@@ -380,7 +390,8 @@ export function summarize(routes: RouteResult[]): PlanResult {
   let sales = 0;
   let riderCost = 0;
   let late = 0;
-  let finish = "00:00";
+  let finish = "";
+  let finishMinutes = 0;
   let orderCount = 0;
   for (let i = 0; i < sorted.length; i++) {
     const r = sorted[i] as RouteResult;
@@ -391,7 +402,10 @@ export function summarize(routes: RouteResult[]): PlanResult {
     riderCost = riderCost + r.rider_cost;
     late = late + r.late_orders;
     orderCount = orderCount + r.order_ids.length;
-    if (r.finish_time > finish) finish = r.finish_time;
+    if (finish === "" || r.finish_minutes > finishMinutes) {
+      finish = r.finish_time;
+      finishMinutes = r.finish_minutes;
+    }
   }
   return {
     riders: sorted.length,
@@ -403,6 +417,7 @@ export function summarize(routes: RouteResult[]): PlanResult {
     rider_cost: round2(riderCost),
     profit: round2(sales - boxes * BOX_COST - riderCost),
     finish_time: finish,
+    finish_minutes: finishMinutes,
     late_orders: late,
     routes: sorted,
   };

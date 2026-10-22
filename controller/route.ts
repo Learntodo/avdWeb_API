@@ -4,7 +4,19 @@ import express from "express";
 import crypto from "crypto";
 import { conn } from "../dbconnect";
 import { thaiDate } from "./order";
-import { makePlans, measureRoute, ordersOf, summarize, loadRoadDistances, PlanOrder, MAX_ORDERS, BOX_COST } from "../planner";
+import {
+  makePlans,
+  measureRoute,
+  ordersOf,
+  summarize,
+  loadRoadDistances,
+  nowMinutes,
+  toTime,
+  PlanOrder,
+  MAX_ORDERS,
+  MAX_MINUTES,
+  BOX_COST,
+} from "../planner";
 import { RouteResult, RouteRider, StopResult } from "../model/route";
 
 export const router = express.Router();
@@ -79,12 +91,18 @@ function makeCode(): string {
   return code;
 }
 
+// จำนวนนาทีจากเวลา from ถึงเวลา to เช่น "11:05" -> "11:47" = 42 (ข้ามเที่ยงคืนก็นับถูก)
+function minutesBetween(from: string, to: string): number {
+  const toMin = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+  return (toMin(to) - toMin(from) + 24 * 60) % (24 * 60);
+}
+
 // อ่านใบงานที่บันทึกไว้ แล้วจัดเป็นเที่ยว (ใบงาน) พร้อมไรเดอร์และจุดส่งเรียงตามลำดับ
 // by = "date" ทุกใบของวันนั้น (หน้าจัดเส้นทาง), "code" ใบเดียวจากเลขใบงาน, "rider" ใบงานของไรเดอร์ในวันที่ date
 export async function savedRoutes(by: "date" | "code" | "rider", value: string | number, date?: string) {
   let sql =
     "SELECT routes.id, routes.code, routes.delivery_date, routes.route_no, routes.rider_id, routes.total_km, routes.boxes," +
-    " routes.rider_cost, routes.finish_time, route_stops.seq, route_stops.order_id, route_stops.distance_km," +
+    " routes.rider_cost, routes.start_time, routes.finish_time, route_stops.seq, route_stops.order_id, route_stops.distance_km," +
     " route_stops.eta, orders.customer_id, orders.quantity, orders.total_price, orders.status, orders.delivery_address," +
     " orders.delivery_latitude, orders.delivery_longitude, customers.first_name, customers.last_name, customers.phone," +
     " users.first_name AS rider_first_name, users.last_name AS rider_last_name, users.phone AS rider_phone" +
@@ -123,8 +141,10 @@ export async function savedRoutes(by: "date" | "code" | "rider", value: string |
         food_cost: row.boxes * BOX_COST,
         rider_cost: row.rider_cost,
         profit: 0,
+        start_time: row.start_time,
         finish_time: row.finish_time,
-        late_orders: row.finish_time > "12:30" ? 1 : 0,
+        finish_minutes: minutesBetween(row.start_time, row.finish_time),
+        late_orders: minutesBetween(row.start_time, row.finish_time) > MAX_MINUTES ? 1 : 0,
       };
       routes.push(route);
     }
@@ -141,6 +161,7 @@ export async function savedRoutes(by: "date" | "code" | "rider", value: string |
       quantity: row.quantity,
       distance_km: row.distance_km,
       eta: row.eta,
+      minutes: minutesBetween(row.start_time, row.eta),
       status: row.status,
     };
     route.stops.push(stop);
@@ -173,7 +194,7 @@ router.post("/plan", async (req, res) => {
     const plans = makePlans(orders, round, riders.length);
     if (plans.length === 0) {
       return res.status(400).json({
-        error: `ไรเดอร์ ${riders.length} คนส่งให้ทัน 12:30 น. ไม่ได้ กรุณาเพิ่มไรเดอร์`,
+        error: `ไรเดอร์ ${riders.length} คนส่งให้ถึงภายใน 1 ชั่วโมงไม่ได้ กรุณาเพิ่มไรเดอร์`,
       });
     }
     // road_distance: true = ระยะตามถนนจริง, false = ระยะโดยประมาณ (เชื่อมต่อแผนที่ถนนไม่ได้)
@@ -183,7 +204,8 @@ router.post("/plan", async (req, res) => {
   }
 });
 
-// POST /routes ยืนยันแผนแล้วบันทึกเป็นใบงาน (แทนที่ใบงานเดิมของวันนั้น) และเปลี่ยนออเดอร์เป็น "กำลังส่ง"
+// POST /routes กด "ออกส่ง": ยืนยันแผนแล้วบันทึกเป็นใบงาน (แทนที่ใบงานเดิมของวันนั้น) และเปลี่ยนออเดอร์เป็น "กำลังส่ง"
+// เวลาที่กด = เวลาออกจากร้าน ทุกจุดต้องถึงภายใน 1 ชั่วโมงหลังจากนี้
 // body: { "date": "2026-10-20", "routes": [[5, 2], [7], [1, 9, 3]] } (รหัสออเดอร์ของแต่ละเที่ยว เรียงตามลำดับส่ง)
 // ระบบคำนวณระยะทาง / ค่าไรเดอร์ ใหม่เองทั้งหมด ไม่เชื่อตัวเลขที่ส่งมา และแจกใบงานให้ไรเดอร์ตามลำดับรหัส
 router.post("/", async (req, res) => {
@@ -226,9 +248,11 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: `แผนนี้ใช้ไรเดอร์ ${list.length} คน แต่มีไรเดอร์ ${riders.length} คน` });
     }
     await loadRoads(orders);
-    const plan = summarize(list.map((route: number[]) => measureRoute(ordersOf(orders, route))));
+    // เวลาที่กดออกส่ง = เวลาออกจากร้าน คิดเวลาถึงแต่ละจุดจากตอนนี้
+    const start = nowMinutes();
+    const plan = summarize(list.map((route: number[]) => measureRoute(ordersOf(orders, route), start)));
     if (plan.late_orders > 0) {
-      return res.status(400).json({ error: "แผนนี้มีจุดที่ส่งเกิน 12:30 น." });
+      return res.status(400).json({ error: "แผนนี้มีจุดที่ส่งถึงเกิน 1 ชั่วโมง" });
     }
 
     // บันทึกทั้งหมดใน Transaction เดียว (ผิดพลาดตรงไหน ยกเลิกทั้งหมด)
@@ -242,8 +266,8 @@ router.post("/", async (req, res) => {
         const rider = riders[i] as RouteRider; // เที่ยวที่ 1 -> ไรเดอร์คนแรก, เที่ยวที่ 2 -> คนที่สอง, ...
         const code = makeCode();
         const [result] = await db.query(
-          "INSERT INTO `routes`(`code`, `delivery_date`, `route_no`, `rider_id`, `total_km`, `boxes`, `rider_cost`, `finish_time`) VALUES (?,?,?,?,?,?,?,?)",
-          [code, date, route.route_no, rider.id, route.total_km, route.boxes, route.rider_cost, route.finish_time]
+          "INSERT INTO `routes`(`code`, `delivery_date`, `route_no`, `rider_id`, `start_time`, `total_km`, `boxes`, `rider_cost`, `finish_time`) VALUES (?,?,?,?,?,?,?,?,?)",
+          [code, date, route.route_no, rider.id, toTime(start), route.total_km, route.boxes, route.rider_cost, route.finish_time]
         );
         const routeId = (result as any).insertId;
         const stops = route.stops.map((s) => [routeId, s.order_id, s.seq, s.distance_km, s.eta]);
@@ -264,7 +288,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-// GET /routes?date=2026-10-20 ใบงานที่บันทึกไว้ของวันนั้น พร้อมไรเดอร์ และสรุปยอด
+// GET /routes?date=2026-10-20 ใบงานที่บันทึกไว้ของวันนั้น พร้อมไรเดอร์ เวลาออกส่ง และสรุปยอด
 router.get("/", async (req, res) => {
   try {
     const date = readDate(req.query.date);
@@ -284,7 +308,8 @@ router.get("/", async (req, res) => {
     let km = 0;
     let orders = 0;
     let delivered = 0;
-    let finish = "00:00";
+    let finish = "";
+    let finishMinutes = 0;
     for (const r of routes) {
       sales = sales + r.sales;
       riderCost = riderCost + r.rider_cost;
@@ -292,7 +317,10 @@ router.get("/", async (req, res) => {
       km = km + r.total_km;
       orders = orders + r.stops.length;
       delivered = delivered + r.stops.filter((s) => s.status === "delivered").length;
-      if (r.finish_time > finish) finish = r.finish_time;
+      if (finish === "" || r.finish_minutes > finishMinutes) {
+        finish = r.finish_time;
+        finishMinutes = r.finish_minutes;
+      }
     }
     res.json({
       date: date,
@@ -307,7 +335,9 @@ router.get("/", async (req, res) => {
       food_cost: boxes * BOX_COST,
       rider_cost: Math.round(riderCost * 100) / 100,
       profit: Math.round((sales - boxes * BOX_COST - riderCost) * 100) / 100,
+      start_time: routes.length > 0 ? routes[0]!.start_time : null, // เวลาที่กดออกส่ง
       finish_time: finish,
+      finish_minutes: finishMinutes,
       late_orders: routes.filter((r) => r.late_orders > 0).length,
       routes: routes,
     });

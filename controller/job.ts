@@ -17,6 +17,7 @@ function jobSheet(route: Awaited<ReturnType<typeof savedRoutes>>[number]) {
     delivery_date: route.delivery_date,
     route_no: route.route_no,
     rider: route.rider,
+    start_time: route.start_time, // เวลาออกจากร้าน
     total_km: route.total_km,
     boxes: route.boxes,
     rider_cost: route.rider_cost,

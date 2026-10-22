@@ -13,7 +13,8 @@ export interface StopResult {
   longitude: number;
   quantity: number;
   distance_km: number; // ระยะจากจุดก่อนหน้า (จุดแรก = จากร้าน)
-  eta: string; // เวลาถึงโดยประมาณ เช่น "11:42"
+  eta: string; // เวลาถึงโดยประมาณ เช่น "11:42" (แผนที่ยังไม่ออกส่ง ดู minutes แทน)
+  minutes: number; // ถึงหลังออกจากร้านกี่นาที
   status?: string; // สถานะออเดอร์ (มีเฉพาะใบงานที่บันทึกแล้ว)
 }
 
@@ -37,8 +38,10 @@ export interface RouteResult {
   food_cost: number;
   rider_cost: number;
   profit: number;
+  start_time?: string; // เวลาออกส่ง (มีเฉพาะใบงานที่บันทึกแล้ว)
   finish_time: string; // เวลาถึงจุดสุดท้าย
-  late_orders: number; // จำนวนจุดที่ถึงเกิน 12:30
+  finish_minutes: number; // ถึงจุดสุดท้ายหลังออกจากร้านกี่นาที
+  late_orders: number; // จำนวนจุดที่ถึงเกิน 1 ชั่วโมงหลังออกส่ง
 }
 
 // แผนการส่งทั้งร้าน
@@ -52,6 +55,7 @@ export interface PlanResult {
   rider_cost: number;
   profit: number;
   finish_time: string;
+  finish_minutes: number; // ส่งครบทุกจุดหลังออกจากร้านกี่นาที
   late_orders: number;
   routes: RouteResult[];
 }
@@ -63,6 +67,7 @@ export interface Route {
   delivery_date: string;
   route_no: number;
   rider_id: number | null; // ไรเดอร์ที่รับใบงาน (ตาราง users)
+  start_time: string; // เวลาที่กด "ออกส่ง" เช่น "11:05"
   total_km: number;
   boxes: number;
   rider_cost: number;
