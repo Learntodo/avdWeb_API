@@ -1,10 +1,10 @@
 // API จัดเส้นทางส่ง /routes (เฉพาะเจ้าของร้าน)
-// คำนวณแผน -> เจ้าของร้านเลือกแผน -> บันทึกเป็นใบงาน (ผูกกับไรเดอร์ในระบบ มีเลขใบงานให้ไรเดอร์)
+// ขั้นตอน: คำนวณแผน -> เจ้าของร้านเลือกแผน -> กด "ออกส่ง" บันทึกเป็นใบงาน (ผูกกับไรเดอร์ มีเลขใบงานให้ไรเดอร์)
 // ส่งได้หลายรอบต่อวัน: ออเดอร์ใหม่ที่ยังไม่อยู่ในใบงาน จัดเป็นรอบใหม่ ให้ไรเดอร์ที่ว่าง (ส่งรอบก่อนเสร็จแล้ว) รับไป
 import express from "express";
 import crypto from "crypto";
 import { conn } from "../dbconnect";
-import { thaiDate } from "./order";
+import { thaiDate, readDate, minutesBetween } from "../utils";
 import {
   makePlans,
   measureRoute,
@@ -20,21 +20,13 @@ import {
   MAX_KM,
   shopKm,
 } from "../planner";
-import { RouteResult, RouteRider, StopResult } from "../model/route";
+import { RouteResult, RouteRider, SavedRoute, StopResult } from "../model/route";
 
 export const router = express.Router();
 
-// ตรวจรูปแบบวันที่ YYYY-MM-DD (ไม่ส่งมา = วันนี้ตามเวลาไทย) ผิดรูปแบบคืนค่า null
-export function readDate(value: unknown): string | null {
-  if (value === undefined || value === "") return thaiDate();
-  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
-  return null;
-}
-
-// โหลดระยะถนนจริงของร้านและทุกจุดส่ง (true = ได้ระยะถนนจริง, false = ใช้ระยะโดยประมาณ)
-function loadRoads(orders: PlanOrder[]): Promise<boolean> {
-  return loadRoadDistances(orders.map((o) => ({ lat: o.delivery_latitude, lng: o.delivery_longitude })));
-}
+// =====================================================================
+// ฟังก์ชันช่วย: อ่านข้อมูลจากฐานข้อมูล
+// =====================================================================
 
 // ออเดอร์ "รอส่ง" ของวันที่เลือกที่ยังไม่อยู่ในใบงาน พร้อมชื่อและเบอร์ลูกค้า (รวมที่อยู่นอกเขตส่ง)
 async function waitingOrders(date: string): Promise<PlanOrder[]> {
@@ -49,10 +41,21 @@ async function waitingOrders(date: string): Promise<PlanOrder[]> {
   return rows as PlanOrder[];
 }
 
-// ออเดอร์ที่ต้องจัดเส้นทางรอบใหม่ = รอส่ง ยังไม่อยู่ในใบงาน และอยู่ในเขตส่ง 3 กม. (นอกเขตไม่จัดให้)
+// ออเดอร์นี้อยู่ในเขตส่ง 3 กม. ไหม
+function inArea(order: PlanOrder): boolean {
+  return shopKm(order.delivery_latitude, order.delivery_longitude) <= MAX_KM;
+}
+
+// ออเดอร์ที่ต้องจัดเส้นทางรอบใหม่ = รอส่ง ยังไม่อยู่ในใบงาน และอยู่ในเขตส่ง (นอกเขตไม่จัดให้)
 async function loadOrders(date: string): Promise<PlanOrder[]> {
   const orders = await waitingOrders(date);
-  return orders.filter((o) => shopKm(o.delivery_latitude, o.delivery_longitude) <= MAX_KM);
+  return orders.filter((order) => inArea(order));
+}
+
+// โหลดระยะถนนจริงของร้านและทุกจุดส่ง (true = ได้ระยะถนนจริง, false = ใช้ระยะโดยประมาณ)
+function loadRoads(orders: PlanOrder[]): Promise<boolean> {
+  const points = orders.map((order) => ({ lat: order.delivery_latitude, lng: order.delivery_longitude }));
+  return loadRoadDistances(points);
 }
 
 // ไรเดอร์ที่เปิดใช้งานอยู่ (รับใบงานได้) เรียงตามรหัส
@@ -85,6 +88,12 @@ async function deliveredCount(routeId: number): Promise<number> {
   return Number((rows as any[])[0].count);
 }
 
+// เลขเที่ยวล่าสุดของวันนั้น (รอบใหม่นับต่อจากเลขนี้)
+async function lastRouteNo(date: string): Promise<number> {
+  const [rows] = await conn.query("SELECT MAX(route_no) AS last FROM routes WHERE delivery_date = ?", [date]);
+  return Number((rows as any[])[0].last ?? 0);
+}
+
 // ตรวจก่อนจัดเส้นทาง: มีออเดอร์ใหม่ไหม, ไรเดอร์ว่างพอไหม (ผ่านคืนค่า null, ไม่ผ่านคืนข้อความ)
 async function checkBeforePlan(orders: PlanOrder[], free: RouteRider[]): Promise<string | null> {
   if (orders.length === 0) {
@@ -95,17 +104,11 @@ async function checkBeforePlan(orders: PlanOrder[], free: RouteRider[]): Promise
     if (all.length === 0) return "ยังไม่มีไรเดอร์ในระบบ กรุณาเพิ่มไรเดอร์ก่อน";
     return `ไรเดอร์ทั้ง ${all.length} คนกำลังออกส่งอยู่ รอไรเดอร์ส่งเสร็จก่อน หรือเพิ่มไรเดอร์`;
   }
-  const need = Math.ceil(orders.length / MAX_ORDERS);
+  const need = Math.ceil(orders.length / MAX_ORDERS); // ไรเดอร์ที่ต้องใช้อย่างน้อย
   if (free.length < need) {
     return `ไรเดอร์ว่างไม่พอ: มีออเดอร์ ${orders.length} รายการ ต้องใช้ไรเดอร์อย่างน้อย ${need} คน (ตอนนี้ว่าง ${free.length} คน)`;
   }
   return null;
-}
-
-// เลขเที่ยวล่าสุดของวันนั้น (รอบใหม่นับต่อจากเลขนี้)
-async function lastRouteNo(date: string): Promise<number> {
-  const [rows] = await conn.query("SELECT MAX(route_no) AS last FROM routes WHERE delivery_date = ?", [date]);
-  return Number((rows as any[])[0].last ?? 0);
 }
 
 // สุ่มเลขใบงาน 8 ตัว (ตัด 0 O 1 I ที่อ่านสับสนออก) เดาสุ่มได้ยาก เพราะใช้เปิดดูใบงานโดยไม่ต้อง login
@@ -118,14 +121,10 @@ function makeCode(): string {
   return code;
 }
 
-// จำนวนนาทีจากเวลา from ถึงเวลา to เช่น "11:05" -> "11:47" = 42 (ข้ามเที่ยงคืนก็นับถูก)
-function minutesBetween(from: string, to: string): number {
-  const toMin = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
-  return (toMin(to) - toMin(from) + 24 * 60) % (24 * 60);
-}
-
-// อ่านใบงานที่บันทึกไว้ แล้วจัดเป็นเที่ยว (ใบงาน) พร้อมไรเดอร์และจุดส่งเรียงตามลำดับ
-// by = "date" ทุกใบของวันนั้น (หน้าจัดเส้นทาง), "code" ใบเดียวจากเลขใบงาน, "rider" ใบงานของไรเดอร์ในวันที่ date
+// อ่านใบงานที่บันทึกไว้ แล้วจัดเป็นเที่ยว พร้อมไรเดอร์และจุดส่งเรียงตามลำดับ
+// by = "date"  ทุกใบของวันนั้น (หน้าจัดเส้นทาง)
+// by = "code"  ใบเดียวจากเลขใบงาน
+// by = "rider" ใบงานของไรเดอร์ในวันที่ date
 export async function savedRoutes(by: "date" | "code" | "rider", value: string | number, date?: string) {
   let sql =
     "SELECT routes.id, routes.code, routes.delivery_date, routes.route_no, routes.rider_id, routes.total_km, routes.boxes," +
@@ -147,10 +146,13 @@ export async function savedRoutes(by: "date" | "code" | "rider", value: string |
   }
   const [rows] = await conn.query(sql, params);
 
-  const routes: (RouteResult & { id: number; code: string; delivery_date: string })[] = [];
+  // 1 แถว = จุดส่ง 1 จุด นำแถวของใบงานเดียวกันมารวมเป็นเที่ยวเดียว
+  const routes: SavedRoute[] = [];
   for (const row of rows as any[]) {
-    let route = routes.find((r) => r.id === row.id);
+    let route = routes.find((item) => item.id === row.id);
     if (!route) {
+      // เจอใบงานนี้ครั้งแรก สร้างเที่ยวใหม่
+      const minutes = minutesBetween(row.start_time, row.finish_time);
       route = {
         id: row.id,
         code: row.code,
@@ -170,11 +172,12 @@ export async function savedRoutes(by: "date" | "code" | "rider", value: string |
         profit: 0,
         start_time: row.start_time,
         finish_time: row.finish_time,
-        finish_minutes: minutesBetween(row.start_time, row.finish_time),
-        late_orders: minutesBetween(row.start_time, row.finish_time) > MAX_MINUTES ? 1 : 0,
+        finish_minutes: minutes,
+        late_orders: minutes > MAX_MINUTES ? 1 : 0,
       };
       routes.push(route);
     }
+    // เพิ่มจุดส่งของแถวนี้เข้าไปในเที่ยว
     const stop: StopResult = {
       seq: row.seq,
       order_id: row.order_id,
@@ -198,6 +201,10 @@ export async function savedRoutes(by: "date" | "code" | "rider", value: string |
   }
   return routes;
 }
+
+// =====================================================================
+// API
+// =====================================================================
 
 // POST /routes/plan คำนวณแผนเส้นทางของออเดอร์ที่ยังไม่อยู่ในใบงาน (ยังไม่บันทึก) ใช้ระยะตามถนนจริง
 // body: { "date": "2026-10-20", "round": 0 }
@@ -228,7 +235,9 @@ router.post("/plan", async (req, res) => {
     // เลขเที่ยวนับต่อจากรอบก่อนของวันเดียวกัน (ตรงกับเลขที่จะบันทึกจริง)
     const last = await lastRouteNo(date);
     for (const plan of plans) {
-      for (const route of plan.routes) route.route_no = route.route_no + last;
+      for (const route of plan.routes) {
+        route.route_no = route.route_no + last;
+      }
     }
     // road_distance: true = ระยะตามถนนจริง, false = ระยะโดยประมาณ (เชื่อมต่อแผนที่ถนนไม่ได้)
     res.json({ date: date, road_distance: road, riders_available: riders.length, plans: plans });
@@ -253,7 +262,7 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "routes ต้องเป็นรายการใบงาน" });
     }
 
-    // ตรวจว่าทุกเที่ยวมี 1-3 ออเดอร์ และไม่มีออเดอร์ซ้ำ
+    // 1. ตรวจว่าทุกเที่ยวมี 1-3 ออเดอร์ และไม่มีออเดอร์ซ้ำ
     const ids: number[] = [];
     for (const route of list) {
       if (!Array.isArray(route) || route.length < 1 || route.length > MAX_ORDERS) {
@@ -267,28 +276,30 @@ router.post("/", async (req, res) => {
       }
     }
 
-    // ต้องครอบคลุมออเดอร์ที่ยังไม่อยู่ในใบงานครบทุกรายการพอดี และไรเดอร์ที่ว่างต้องพอ
+    // 2. ต้องครอบคลุมออเดอร์ที่ยังไม่อยู่ในใบงานครบทุกรายการพอดี และไรเดอร์ที่ว่างต้องพอ
     const orders = await loadOrders(date);
     const riders = await freeRiders(date);
     const problem = await checkBeforePlan(orders, riders);
     if (problem !== null) {
       return res.status(400).json({ error: problem });
     }
-    if (orders.length !== ids.length || !orders.every((o) => ids.includes(o.id))) {
+    const sameOrders = orders.length === ids.length && orders.every((order) => ids.includes(order.id));
+    if (!sameOrders) {
       return res.status(400).json({ error: "มีออเดอร์เปลี่ยนไประหว่างนี้ กรุณากด “ให้ระบบจัดเส้นทาง” ใหม่อีกครั้ง" });
     }
     if (list.length > riders.length) {
       return res.status(400).json({ error: `แผนนี้ใช้ไรเดอร์ ${list.length} คน แต่ว่างอยู่ ${riders.length} คน` });
     }
+
+    // 3. คำนวณใหม่ โดยใช้เวลาที่กดออกส่ง = เวลาออกจากร้าน
     await loadRoads(orders);
-    // เวลาที่กดออกส่ง = เวลาออกจากร้าน คิดเวลาถึงแต่ละจุดจากตอนนี้
     const start = nowMinutes();
     const plan = summarize(list.map((route: number[]) => measureRoute(ordersOf(orders, route), start)));
     if (plan.late_orders > 0) {
       return res.status(400).json({ error: "แผนนี้มีบ้านที่ส่งไม่ทันภายใน 1 ชั่วโมง" });
     }
 
-    // บันทึกทั้งหมดใน Transaction เดียว (ผิดพลาดตรงไหน ยกเลิกทั้งหมด)
+    // 4. บันทึกทั้งหมดใน Transaction เดียว (ผิดพลาดตรงไหน ยกเลิกทั้งหมด)
     const last = await lastRouteNo(date); // เลขเที่ยวนับต่อจากรอบก่อน
     const db = await conn.getConnection();
     const codes: { route_no: number; code: string; rider_id: number }[] = [];
@@ -304,7 +315,8 @@ router.post("/", async (req, res) => {
           [code, date, routeNo, rider.id, toTime(start), route.total_km, route.boxes, route.rider_cost, route.finish_time]
         );
         const routeId = (result as any).insertId;
-        const stops = route.stops.map((s) => [routeId, s.order_id, s.seq, s.distance_km, s.eta]);
+        // จุดส่งทุกจุดของเที่ยวนี้ เพิ่มในคำสั่งเดียว
+        const stops = route.stops.map((stop) => [routeId, stop.order_id, stop.seq, stop.distance_km, stop.eta]);
         await db.query("INSERT INTO `route_stops`(`route_id`, `order_id`, `seq`, `distance_km`, `eta`) VALUES ?", [stops]);
         codes.push({ route_no: routeNo, code: code, rider_id: rider.id });
       }
@@ -334,65 +346,77 @@ router.get("/", async (req, res) => {
     const free = await freeRiders(date);
     // ออเดอร์ "รอส่ง" ที่ยังไม่อยู่ในใบงาน (รับเพิ่มหลังออกส่งไปแล้ว -> จัดเป็นรอบใหม่) แยกที่อยู่นอกเขตส่งออกมา
     const all = await waitingOrders(date);
-    const waiting = all.filter((o) => shopKm(o.delivery_latitude, o.delivery_longitude) <= MAX_KM);
-    const outside = all.filter((o) => shopKm(o.delivery_latitude, o.delivery_longitude) > MAX_KM);
+    const waiting = all.filter((order) => inArea(order));
+    const outside = all.filter((order) => !inArea(order));
+
+    // รวมยอดทั้งวัน
     let sales = 0;
     let riderCost = 0;
     let boxes = 0;
     let km = 0;
-    let orders = 0;
-    let delivered = 0;
-    let finish = "";
+    let orderCount = 0;
+    let deliveredTotal = 0;
+    let finishTime = "";
     let finishMinutes = 0;
-    let finishAt = -1;
-    const riderIds: number[] = [];
+    let finishAt = -1; // เวลาส่งเสร็จ (นาทีนับจากเที่ยงคืน) ของรอบที่เสร็จช้าที่สุด
+    const riderIds: number[] = []; // ไรเดอร์ที่ได้ใบงานวันนี้ (ไม่นับซ้ำ)
     // รอบที่ออกส่ง (ใบงานที่กดออกส่งพร้อมกัน = เวลาออกเดียวกัน)
     const rounds: { start_time: string; routes: number; orders: number; delivered: number }[] = [];
-    for (const r of routes) {
-      const done = r.stops.filter((s) => s.status === "delivered").length;
-      sales = sales + r.sales;
-      riderCost = riderCost + r.rider_cost;
-      boxes = boxes + r.boxes;
-      km = km + r.total_km;
-      orders = orders + r.stops.length;
-      delivered = delivered + done;
-      if (r.rider && !riderIds.includes(r.rider.id)) riderIds.push(r.rider.id);
-      // เวลาส่งเสร็จของทั้งวัน = จุดสุดท้ายของรอบที่ส่งเสร็จช้าที่สุด
-      const at = minutesBetween("00:00", r.start_time as string) + r.finish_minutes;
-      if (at > finishAt) {
-        finishAt = at;
-        finish = r.finish_time;
-        finishMinutes = r.finish_minutes;
+
+    for (const route of routes) {
+      const delivered = route.stops.filter((stop) => stop.status === "delivered").length;
+      sales = sales + route.sales;
+      riderCost = riderCost + route.rider_cost;
+      boxes = boxes + route.boxes;
+      km = km + route.total_km;
+      orderCount = orderCount + route.stops.length;
+      deliveredTotal = deliveredTotal + delivered;
+      if (route.rider && !riderIds.includes(route.rider.id)) {
+        riderIds.push(route.rider.id);
       }
-      let round = rounds.find((x) => x.start_time === r.start_time);
+
+      // เวลาส่งเสร็จของทั้งวัน = จุดสุดท้ายของรอบที่ส่งเสร็จช้าที่สุด
+      const startTime = route.start_time as string;
+      const doneAt = minutesBetween("00:00", startTime) + route.finish_minutes;
+      if (doneAt > finishAt) {
+        finishAt = doneAt;
+        finishTime = route.finish_time;
+        finishMinutes = route.finish_minutes;
+      }
+
+      // นับรวมเข้ารอบของเวลาออกส่งนี้
+      let round = rounds.find((item) => item.start_time === startTime);
       if (!round) {
-        round = { start_time: r.start_time as string, routes: 0, orders: 0, delivered: 0 };
+        round = { start_time: startTime, routes: 0, orders: 0, delivered: 0 };
         rounds.push(round);
       }
       round.routes = round.routes + 1;
-      round.orders = round.orders + r.stops.length;
-      round.delivered = round.delivered + done;
+      round.orders = round.orders + route.stops.length;
+      round.delivered = round.delivered + delivered;
     }
     rounds.sort((a, b) => a.start_time.localeCompare(b.start_time));
+
+    const foodCost = boxes * BOX_COST;
+    const lastRound = rounds[rounds.length - 1];
     res.json({
       date: date,
       riders: riderIds.length,
       riders_available: riders.length,
       riders_free: free.length, // ไรเดอร์ที่ว่าง รับรอบใหม่ได้
-      orders: orders,
-      delivered: delivered, // ส่งถึงแล้วกี่ออเดอร์
+      orders: orderCount,
+      delivered: deliveredTotal, // ส่งถึงแล้วกี่ออเดอร์
       waiting: waiting.length,
-      outside: outside.map((o) => o.id), // ออเดอร์ที่อยู่นอกเขตส่ง 3 กม. (ส่งไม่ได้ ต้องแก้จุดส่งหรือยกเลิก)
+      outside: outside.map((order) => order.id), // ออเดอร์ที่อยู่นอกเขตส่ง 3 กม. (ต้องแก้จุดส่งหรือยกเลิก)
       boxes: boxes,
       total_km: Math.round(km * 100) / 100,
       sales: sales,
-      food_cost: boxes * BOX_COST,
+      food_cost: foodCost,
       rider_cost: Math.round(riderCost * 100) / 100,
-      profit: Math.round((sales - boxes * BOX_COST - riderCost) * 100) / 100,
-      start_time: rounds.length > 0 ? rounds[rounds.length - 1]!.start_time : null, // เวลาออกส่งรอบล่าสุด
-      finish_time: finish,
+      profit: Math.round((sales - foodCost - riderCost) * 100) / 100,
+      start_time: lastRound ? lastRound.start_time : null, // เวลาออกส่งรอบล่าสุด
+      finish_time: finishTime,
       finish_minutes: finishMinutes,
-      late_orders: routes.filter((r) => r.late_orders > 0).length,
+      late_orders: routes.filter((route) => route.late_orders > 0).length,
       rounds: rounds,
       routes: routes,
     });
@@ -415,7 +439,7 @@ router.put("/:id", async (req, res) => {
       return res.status(400).json({ error: "ไรเดอร์เริ่มส่งใบงานนี้แล้ว เปลี่ยนคนส่งไม่ได้" });
     }
     const riders = await activeRiders();
-    if (!riders.some((r) => r.id === riderId)) {
+    if (!riders.some((rider) => rider.id === riderId)) {
       return res.status(400).json({ error: "ไม่พบไรเดอร์คนนี้ หรือไรเดอร์ถูกปิดใช้งาน" });
     }
     // ใบงานอื่นของไรเดอร์คนใหม่ในวันเดียวกันที่ยังส่งไม่ครบ (ไรเดอร์ไม่ว่าง)
@@ -425,17 +449,19 @@ router.put("/:id", async (req, res) => {
         " WHERE routes.delivery_date = ? AND routes.rider_id = ? AND routes.id <> ? AND orders.status = 'delivering'",
       [route.delivery_date, riderId, route.id]
     );
-    for (const busy of busyRows as any[]) {
+    const busyRoutes = busyRows as any[];
+    for (const busy of busyRoutes) {
       if ((await deliveredCount(busy.id)) > 0) {
         return res.status(400).json({ error: "ไรเดอร์คนนี้กำลังออกส่งอยู่ ให้เลือกคนอื่น" });
       }
     }
     // สลับ: ใบงานที่ไรเดอร์คนใหม่ถืออยู่ (ยังไม่เริ่มส่ง) ได้ไรเดอร์คนเก่าไปแทน
-    for (const busy of busyRows as any[]) {
+    for (const busy of busyRoutes) {
       await conn.query("UPDATE routes SET rider_id = ? WHERE id = ?", [route.rider_id, busy.id]);
     }
     const [result] = await conn.query("UPDATE routes SET rider_id = ? WHERE id = ?", [riderId, route.id]);
-    res.status(200).json({ affected_row: (result as any).affectedRows });
+    const updateResult = result as any;
+    res.status(200).json({ affected_row: updateResult.affectedRows });
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }

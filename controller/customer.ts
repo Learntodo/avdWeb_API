@@ -19,13 +19,13 @@ router.get("/", async (req, res) => {
 // 2.1 เพิ่มลูกค้า
 router.post("/", async (req, res) => {
   try {
-    let customer: Customer = req.body;
+    const customer: Customer = req.body;
     // บ้านลูกค้าต้องอยู่ในเขตส่ง 3 กม. จากร้าน
     const outside = outsideArea(customer.latitude, customer.longitude, "บ้านลูกค้า");
     if (outside !== null) {
       return res.status(400).json({ error: outside });
     }
-    let sql =
+    const sql =
       "INSERT INTO `customers`(`first_name`, `last_name`, `phone`, `email`, `address`, `latitude`, `longitude`) VALUES (?,?,?,?,?,?,?)";
     const [result] = await conn.query(sql, [
       customer.first_name,
@@ -49,14 +49,14 @@ router.post("/", async (req, res) => {
 // 2.1 แก้ไขข้อมูลลูกค้า
 router.put("/:id", async (req, res) => {
   try {
-    let id = req.params.id;
-    let customer: Customer = req.body;
+    const id = req.params.id;
+    const customer: Customer = req.body;
     // บ้านลูกค้าต้องอยู่ในเขตส่ง 3 กม. จากร้าน
     const outside = outsideArea(customer.latitude, customer.longitude, "บ้านลูกค้า");
     if (outside !== null) {
       return res.status(400).json({ error: outside });
     }
-    let sql =
+    const sql =
       "UPDATE `customers` SET `first_name`=?, `last_name`=?, `phone`=?, `email`=?, `address`=?, `latitude`=?, `longitude`=? WHERE `id`=?";
     const [result] = await conn.query(sql, [
       customer.first_name,
@@ -81,7 +81,7 @@ router.put("/:id", async (req, res) => {
 // 2.1 ลบลูกค้า (ลบไม่ได้ถ้าลูกค้ายังมีรายการสั่งซื้อ)
 router.delete("/:id", async (req, res) => {
   try {
-    let id = req.params.id;
+    const id = req.params.id;
     // ลูกค้าที่มีออเดอร์อยู่ ลบไม่ได้ (ฐานข้อมูลไม่ยอมให้ลบ) บอกเหตุผลให้ชัดแทน error 500
     const [orders] = await conn.query("SELECT COUNT(*) AS count FROM orders WHERE customer_id = ?", [id]);
     const orderCount = Number((orders as any[])[0].count);
@@ -102,10 +102,11 @@ router.delete("/:id", async (req, res) => {
 // 2.2 ค้นหาลูกค้าจากส่วนหนึ่งของชื่อ / นามสกุล เช่น /customers/search?name=สม
 router.get("/search", async (req, res) => {
   try {
-    const [rows] = await conn.query(
-      "SELECT * FROM customers WHERE first_name LIKE ? OR last_name LIKE ?",
-      ["%" + req.query.name + "%", "%" + req.query.name + "%"]
-    );
+    const keyword = "%" + req.query.name + "%"; // % = มีคำนี้อยู่ตรงไหนของชื่อก็ได้
+    const [rows] = await conn.query("SELECT * FROM customers WHERE first_name LIKE ? OR last_name LIKE ?", [
+      keyword,
+      keyword,
+    ]);
     res.json(rows as Customer[]);
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
@@ -118,7 +119,7 @@ router.get("/nearby", async (req, res) => {
   try {
     const lat = req.query.lat;
     const lng = req.query.lng;
-    let sql =
+    const sql =
       "SELECT *, 6371 * 2 * ASIN(SQRT(POWER(SIN(RADIANS(latitude - ?) / 2), 2)" +
       " + COS(RADIANS(?)) * COS(RADIANS(latitude)) * POWER(SIN(RADIANS(longitude - ?) / 2), 2))) AS distance_km" +
       " FROM customers HAVING distance_km <= 1 ORDER BY distance_km";

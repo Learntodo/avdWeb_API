@@ -2,7 +2,7 @@
 import http from "http";
 import { app } from "./app";
 
-// ใช้ PORT ตัวพิมพ์ใหญ่ เพราะบริการโฮสติ้ง เช่น Render จะส่งค่ามาในชื่อนี้
+// ใช้พอร์ตจากตัวแปร env ชื่อ PORT ถ้าไม่มี ใช้ 3000 (รันในเครื่อง)
 const port = process.env.PORT || 3000;
 const server = http.createServer(app);
 

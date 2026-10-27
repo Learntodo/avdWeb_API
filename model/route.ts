@@ -28,7 +28,7 @@ export interface RouteRider {
 
 // 1 เที่ยว = งานของไรเดอร์ 1 คน
 export interface RouteResult {
-  route_no: number; // เที่ยวที่
+  route_no: number; // ลำดับเที่ยวของวันนั้น (1, 2, 3, ...)
   rider?: RouteRider | null; // ไรเดอร์ที่รับใบงาน (มีเฉพาะใบงานที่บันทึกแล้ว)
   order_ids: number[];
   stops: StopResult[];
@@ -42,6 +42,13 @@ export interface RouteResult {
   finish_time: string; // เวลาถึงจุดสุดท้าย
   finish_minutes: number; // ถึงจุดสุดท้ายหลังออกจากร้านกี่นาที
   late_orders: number; // จำนวนจุดที่ถึงเกิน 1 ชั่วโมงหลังออกส่ง
+}
+
+// ใบงานที่บันทึกแล้ว = เที่ยว 1 เที่ยว + รหัสในตาราง routes, เลขใบงาน และวันที่ส่ง
+export interface SavedRoute extends RouteResult {
+  id: number;
+  code: string;
+  delivery_date: string;
 }
 
 // แผนการส่งทั้งร้าน

@@ -4,7 +4,7 @@
 import express from "express";
 import bcrypt from "bcryptjs";
 import { conn } from "../dbconnect";
-import { readDate } from "./route";
+import { readDate, readCount } from "../utils";
 import { ROAD_API, SHOP, MAX_KM } from "../planner";
 
 export const router = express.Router();
@@ -29,14 +29,6 @@ function pick<T>(list: T[]): T {
   return list[Math.floor(Math.random() * list.length)] as T;
 }
 
-// อ่านจำนวนที่ส่งมา (ไม่ส่งมา = ค่าเริ่มต้น) ต้องเป็นจำนวนเต็ม 1 ถึง max ไม่งั้นคืนค่า null
-export function readCount(value: unknown, fallback: number, max: number): number | null {
-  if (value === undefined || value === null || value === "") return fallback;
-  const count = Number(value);
-  if (!Number.isInteger(count) || count < 1 || count > max) return null;
-  return count;
-}
-
 // สุ่มพิกัดในวงกลมรัศมี MAX_KM รอบร้าน (ใช้รากที่สองของค่าสุ่ม ให้จุดกระจายทั่ววงกลม ไม่กองตรงกลาง)
 function randomPoint(radiusKm = MAX_KM) {
   const km = radiusKm * Math.sqrt(Math.random());
@@ -55,15 +47,19 @@ const MAX_ROAD_METERS = 80;
 // จุดที่ใกล้ถนนพอ ใช้พิกัดบนถนนนั้นแทน / โหลดข้อมูลถนนไม่ได้ ใช้จุดสุ่มธรรมดาแทน
 async function roadPoints(count: number) {
   const points: { lat: number; lng: number }[] = [];
-  const used = new Set<string>();
+  const used = new Set<string>(); // พิกัดที่ใช้ไปแล้ว
   try {
+    // ลองไม่เกิน 6 ชุด
     for (let round = 0; round < 6 && points.length < count; round++) {
-      const list = [];
+      // สุ่ม 99 จุด (OSRM รับได้ไม่เกิน 100 จุด = ร้าน + 99 จุด)
       // สุ่มในรัศมีสั้นกว่า 3 กม. เล็กน้อย เลื่อนไปริมถนนแล้วจะได้ไม่เกิน 3 กม.
-      for (let i = 0; i < 99; i++) list.push(randomPoint(MAX_KM - MAX_ROAD_METERS / 1000)); // OSRM รับได้ไม่เกิน 100 จุด (ร้าน + 99 จุด)
-      const coords = [SHOP, ...list].map((p) => `${p.lng},${p.lat}`).join(";");
-      // sources = จุดสุ่มทุกจุด, destinations = ร้าน (จุดที่ 0) ได้ตาราง 99 x 1 ขนาดเล็ก
-      const sources = list.map((p, i) => i + 1).join(";");
+      const list = [];
+      for (let i = 0; i < 99; i++) {
+        list.push(randomPoint(MAX_KM - MAX_ROAD_METERS / 1000));
+      }
+      const coords = [SHOP, ...list].map((point) => `${point.lng},${point.lat}`).join(";");
+      // sources = จุดสุ่มทุกจุด (1-99), destinations = ร้าน (จุดที่ 0) ได้ตาราง 99 x 1 ขนาดเล็ก
+      const sources = list.map((point, i) => i + 1).join(";");
       const response = await fetch(`${ROAD_API}/table/v1/driving/${coords}?sources=${sources}&destinations=0&annotations=distance`, {
         signal: AbortSignal.timeout(6000),
       });
@@ -153,7 +149,7 @@ router.post("/customers", async (req, res) => {
       values.push([name[0], name[1], phone, null, address, point.lat, point.lng, 1]);
     }
     // เพิ่มทุกคนในคำสั่งเดียว (เร็วกว่าเพิ่มทีละคนมาก เพราะฐานข้อมูลอยู่ไกล)
-    let sql =
+    const sql =
       "INSERT INTO `customers`(`first_name`, `last_name`, `phone`, `email`, `address`, `latitude`, `longitude`, `is_simulated`) VALUES ?";
     const [result] = await conn.query(sql, [values]);
     const insertResult = result as any;
@@ -172,21 +168,21 @@ router.post("/riders", async (req, res) => {
     }
     // หาเบอร์ที่ใช้ไปแล้ว จะได้ไม่ซ้ำ (เบอร์ซ้ำ ฐานข้อมูลไม่ยอมบันทึก)
     const [rows] = await conn.query("SELECT phone FROM users WHERE phone LIKE ?", [SIM_RIDER_PHONE + "%"]);
-    const used = (rows as any[]).map((r) => r.phone);
+    const used = (rows as any[]).map((row) => row.phone);
     const hash = await bcrypt.hash(SIM_RIDER_PASSWORD, 10);
     const phones: string[] = [];
     const values = [];
-    let no = 1;
-    while (phones.length < count && no <= 99999) {
-      const phone = SIM_RIDER_PHONE + String(no).padStart(5, "0");
-      no = no + 1;
+    let number = 1;
+    while (phones.length < count && number <= 99999) {
+      const phone = SIM_RIDER_PHONE + String(number).padStart(5, "0");
+      number = number + 1;
       if (used.includes(phone)) continue;
       const plate = `${randomInt(1, 9)}${pick(PLATE_LETTERS)} ${randomInt(1000, 9999)}`;
       values.push([phone, hash, "rider", pick(FIRST_NAMES), pick(LAST_NAMES), plate, 1]);
       phones.push(phone);
     }
     // เพิ่มทุกคนในคำสั่งเดียว
-    let sql =
+    const sql =
       "INSERT INTO `users`(`phone`, `password`, `role`, `first_name`, `last_name`, `license_plate`, `is_simulated`) VALUES ?";
     await conn.query(sql, [values]);
     res.status(201).json({ affected_row: phones.length, phones: phones, password: SIM_RIDER_PASSWORD });
@@ -228,7 +224,7 @@ router.delete("/", async (req, res) => {
       const [rows] = await db.query(
         "SELECT DISTINCT route_stops.route_id FROM route_stops JOIN orders ON orders.id = route_stops.order_id WHERE " + simOrders
       );
-      const routeIds = (rows as any[]).map((r) => r.route_id);
+      const routeIds = (rows as any[]).map((row) => row.route_id);
       if (routeIds.length > 0) {
         await db.query(
           "UPDATE orders SET status = 'pending' WHERE status = 'delivering' AND id IN (SELECT order_id FROM route_stops WHERE route_id IN (?))",

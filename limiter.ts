@@ -2,26 +2,28 @@
 // เก็บตัวนับไว้ในหน่วยความจำของเซิร์ฟเวอร์ (บน Vercel แต่ละเครื่องที่รันนับแยกกัน)
 import express from "express";
 
+// max = เรียกได้กี่ครั้ง, minutes = ภายในกี่นาที
 export function limiter(max: number, minutes: number) {
-  const hits = new Map<string, { count: number; resetAt: number }>();
+  // ตัวนับของแต่ละ IP: count = เรียกไปแล้วกี่ครั้ง, resetAt = เวลาที่เริ่มนับใหม่
+  const counters = new Map<string, { count: number; resetAt: number }>();
 
   return (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const key = req.ip || "unknown";
+    const ip = req.ip || "unknown";
     const now = Date.now();
     // ล้างตัวนับที่หมดเวลาแล้วทิ้ง ไม่ให้หน่วยความจำเต็ม
-    if (hits.size > 10000) {
-      for (const [k, h] of hits) {
-        if (h.resetAt < now) hits.delete(k);
+    if (counters.size > 10000) {
+      for (const [oldIp, counter] of counters) {
+        if (counter.resetAt < now) counters.delete(oldIp);
       }
     }
-    let hit = hits.get(key);
+    let counter = counters.get(ip);
     // ยังไม่เคยเรียก หรือหมดช่วงเวลาแล้ว เริ่มนับใหม่
-    if (!hit || hit.resetAt < now) {
-      hit = { count: 0, resetAt: now + minutes * 60 * 1000 };
-      hits.set(key, hit);
+    if (!counter || counter.resetAt < now) {
+      counter = { count: 0, resetAt: now + minutes * 60 * 1000 };
+      counters.set(ip, counter);
     }
-    hit.count = hit.count + 1;
-    if (hit.count > max) {
+    counter.count = counter.count + 1;
+    if (counter.count > max) {
       res.status(429).json({ error: `เรียกบ่อยเกินไป ลองใหม่ใน ${minutes} นาที` });
       return;
     }

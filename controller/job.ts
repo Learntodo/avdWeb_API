@@ -4,14 +4,16 @@
 // - PUT /jobs/{code}/stops/{orderId} ไรเดอร์กดว่าส่งถึงแล้ว (ต้อง login)
 import express from "express";
 import { conn } from "../dbconnect";
-import { readDate, savedRoutes } from "./route";
+import { readDate } from "../utils";
+import { savedRoutes } from "./route";
 import { SHOP } from "../planner";
 import { TokenPayload } from "../jwtauth";
+import { SavedRoute } from "../model/route";
 
 export const router = express.Router();
 
 // ข้อมูลใบงานที่ไรเดอร์เห็น (ไม่มียอดขาย / กำไรของร้าน)
-function jobSheet(route: Awaited<ReturnType<typeof savedRoutes>>[number]) {
+function jobSheet(route: SavedRoute) {
   return {
     code: route.code,
     delivery_date: route.delivery_date,
@@ -41,7 +43,7 @@ router.get("/", async (req, res) => {
       return res.status(400).json({ error: "date ต้องเป็นรูปแบบ YYYY-MM-DD" });
     }
     const routes = await savedRoutes("rider", auth.id, date);
-    res.json(routes.map((r) => jobSheet(r)));
+    res.json(routes.map((route) => jobSheet(route)));
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }
@@ -58,7 +60,7 @@ router.get("/:code", async (req, res) => {
     if (routes.length === 0) {
       return res.status(404).json({ error: "ไม่พบใบงาน" });
     }
-    res.json(jobSheet(routes[0]!));
+    res.json(jobSheet(routes[0] as SavedRoute));
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }

@@ -1,15 +1,20 @@
 // ระบบคิดเส้นทางส่งข้าวกล่อง: แบ่งออเดอร์ให้ไรเดอร์ (คนละไม่เกิน 3 ออเดอร์) และเรียงลำดับจุดส่ง
 // เป้าหมาย: ค่าไรเดอร์รวมน้อยที่สุด (= ร้านกำไรมากที่สุด) และทุกจุดต้องส่งถึงภายใน 1 ชั่วโมงหลังกด "ออกส่ง"
+//
+// คำศัพท์ในไฟล์นี้
+// - เที่ยว (route) = งานของไรเดอร์ 1 คน: ออกจากร้าน แล้วไปส่งทีละบ้าน 1-3 บ้าน
+// - แผน (plan) = ทุกเที่ยวรวมกัน ครอบคลุมออเดอร์ทั้งหมดที่ต้องส่ง
 import { RouteResult, StopResult, PlanResult } from "./model/route";
 
 // ---------- ค่าคงที่ตามโจทย์ ----------
 export const SHOP = { lat: 16.246, lng: 103.25 }; // พิกัดร้าน (แถวมหาวิทยาลัยมหาสารคาม)
 export const MAX_ORDERS = 3; // ไรเดอร์ 1 คนรับได้ไม่เกิน 3 ออเดอร์
 export const SPEED_KMH = 30; // ไรเดอร์ขับประมาณ 30 กม./ชม.
-export const MAX_MINUTES = 60; // ต้องถึงลูกค้าทุกจุดภายใน 60 นาที นับจากตอนกด "ออกส่ง" (ไม่ได้กำหนดเวลานาฬิกาตายตัว)
+export const MAX_MINUTES = 60; // ต้องถึงลูกค้าทุกจุดภายใน 60 นาที นับจากตอนกด "ออกส่ง"
 export const RIDER_BASE = 15; // ค่าเรียกไรเดอร์ 15 บาทต่อครั้ง
 export const RIDER_PER_KM_BOX = 2; // ค่าส่ง 2 บาท ต่อ กม. ต่อ กล่อง
 export const BOX_COST = 40; // ต้นทุนข้าวกล่องละ 40 บาท
+export const MAX_KM = 3; // ร้านส่งได้เฉพาะลูกค้าที่อยู่ห่างร้าน (เส้นตรง) ไม่เกิน 3 กม.
 
 // ---------- ค่าที่สมมติเพิ่ม (แก้ได้) ----------
 export const ROAD_FACTOR = 1.3; // ใช้เมื่อโหลดระยะถนนจริงไม่ได้: ถนนอ้อมกว่าเส้นตรง จึงคูณระยะเส้นตรงเพิ่ม 30%
@@ -30,12 +35,26 @@ export interface PlanOrder {
   total_price: number;
 }
 
-// ---------- ระยะทางตามถนนจริง ----------
-// ใช้บริการ OSRM (แผนที่ถนนจาก OpenStreetMap ฟรี) คิดระยะขับรถจริงระหว่างทุกคู่จุดในครั้งเดียว
+// =====================================================================
+// ส่วนที่ 1: ระยะทาง
+// =====================================================================
+
+// ระยะเส้นตรง (กม.) ระหว่าง 2 พิกัดบนผิวโลก (สูตร Haversine)
+function straightKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const toRadian = (degree: number) => (degree * Math.PI) / 180;
+  const dLat = toRadian(lat2 - lat1);
+  const dLng = toRadian(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRadian(lat1)) * Math.cos(toRadian(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 6371 * 2 * Math.asin(Math.sqrt(a)); // 6371 = รัศมีโลก (กม.)
+}
+
+// ระยะทางตามถนนจริง: ใช้บริการ OSRM (แผนที่ถนนจาก OpenStreetMap ฟรี)
 export const ROAD_API = "https://router.project-osrm.org";
+
 // ระยะถนนจริงที่โหลดมาแล้ว (กม.) เก็บตามคู่พิกัด เช่น "16.246000,103.250000>16.250000,103.260000"
 let roadKm = new Map<string, number>();
 
+// ชื่อของพิกัด ใช้เป็น key ใน roadKm เช่น "16.246000,103.250000"
 function pointKey(lat: number, lng: number): string {
   return Number(lat).toFixed(6) + "," + Number(lng).toFixed(6);
 }
@@ -43,32 +62,39 @@ function pointKey(lat: number, lng: number): string {
 // โหลดระยะถนนจริงระหว่างทุกคู่จุด (ร้าน + จุดส่ง) จาก OSRM ด้วยคำขอเดียว (table service)
 // สำเร็จคืนค่า true, เชื่อมต่อไม่ได้ / ช้าเกิน 6 วินาที คืนค่า false แล้วระบบใช้ระยะโดยประมาณแทน
 export async function loadRoadDistances(points: { lat: number; lng: number }[]): Promise<boolean> {
-  // ตัดจุดซ้ำ (ลูกค้าคนเดียวกันสั่งหลายออเดอร์) และใส่ร้านเป็นจุดแรก
+  // ใส่ร้านเป็นจุดแรก และตัดจุดซ้ำออก (ลูกค้าคนเดียวกันสั่งหลายออเดอร์)
   const keys: string[] = [pointKey(SHOP.lat, SHOP.lng)];
   const list = [SHOP];
-  for (const p of points) {
-    const key = pointKey(p.lat, p.lng);
+  for (const point of points) {
+    const key = pointKey(point.lat, point.lng);
     if (!keys.includes(key)) {
       keys.push(key);
-      list.push(p);
+      list.push(point);
     }
   }
+
   // เคยโหลดครบทุกคู่แล้ว (เช่น กดคำนวณใหม่ / ยืนยันแผน) ไม่ต้องโหลดซ้ำ
-  if (keys.every((a) => keys.every((b) => roadKm.has(a + ">" + b)))) return true;
+  const loadedAll = keys.every((from) => keys.every((to) => roadKm.has(from + ">" + to)));
+  if (loadedAll) return true;
   if (list.length > 100) return false; // OSRM รับได้ไม่เกิน 100 จุดต่อครั้ง
+
   try {
-    const coords = list.map((p) => `${Number(p.lng)},${Number(p.lat)}`).join(";");
+    const coords = list.map((point) => `${Number(point.lng)},${Number(point.lat)}`).join(";");
     const response = await fetch(`${ROAD_API}/table/v1/driving/${coords}?annotations=distance`, {
       signal: AbortSignal.timeout(6000),
     });
     const data: any = await response.json();
     if (!response.ok || data.code !== "Ok") return false;
+
     if (roadKm.size > 50000) roadKm = new Map<string, number>(); // ไม่ให้หน่วยความจำเต็ม
+    // data.distances[i][j] = ระยะ (เมตร) จากจุดที่ i ไปจุดที่ j
     for (let i = 0; i < keys.length; i++) {
       for (let j = 0; j < keys.length; j++) {
         const meters = data.distances[i][j];
         // ไปไม่ถึงทางถนน (null) ไม่เก็บ ให้ใช้ระยะโดยประมาณแทน
-        if (typeof meters === "number") roadKm.set(keys[i] + ">" + keys[j], meters / 1000);
+        if (typeof meters === "number") {
+          roadKm.set(keys[i] + ">" + keys[j], meters / 1000);
+        }
       }
     }
     return true;
@@ -78,33 +104,26 @@ export async function loadRoadDistances(points: { lat: number; lng: number }[]):
 }
 
 // ระยะทาง (กม.) จากจุดที่ 1 ไปจุดที่ 2
-// มีระยะถนนจริงจาก OSRM ใช้ค่านั้น ไม่มีใช้สูตร Haversine (ระยะเส้นตรงบนผิวโลก) x ROAD_FACTOR
+// มีระยะถนนจริงจาก OSRM ใช้ค่านั้น ไม่มีใช้ระยะเส้นตรง x ROAD_FACTOR
 export function distanceKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const road = roadKm.get(pointKey(lat1, lng1) + ">" + pointKey(lat2, lng2));
   if (road !== undefined) return road;
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return 6371 * 2 * Math.asin(Math.sqrt(a)) * ROAD_FACTOR;
+  return straightKm(lat1, lng1, lat2, lng2) * ROAD_FACTOR;
 }
 
-// ---------- เขตส่ง ----------
-// ร้านส่งได้เฉพาะลูกค้าที่อยู่ห่างร้าน (เส้นตรง) ไม่เกิน 3 กม.
-export const MAX_KM = 3;
+// =====================================================================
+// ส่วนที่ 2: เขตส่ง 3 กม.
+// =====================================================================
 
-// ระยะเส้นตรง (กม.) จากร้านถึงพิกัดนี้ (สูตร Haversine)
+// ระยะเส้นตรง (กม.) จากร้านถึงพิกัดนี้
 export function shopKm(lat: number, lng: number): number {
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const dLat = toRad(Number(lat) - SHOP.lat);
-  const dLng = toRad(Number(lng) - SHOP.lng);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(SHOP.lat)) * Math.cos(toRad(Number(lat))) * Math.sin(dLng / 2) ** 2;
-  return 6371 * 2 * Math.asin(Math.sqrt(a));
+  return straightKm(SHOP.lat, SHOP.lng, Number(lat), Number(lng));
 }
 
 // ตรวจพิกัดว่าอยู่ในเขตส่งไหม (อยู่ในเขตคืนค่า null, ไม่อยู่คืนข้อความบอกเหตุผล) place เช่น "บ้านลูกค้า", "จุดส่ง"
 export function outsideArea(lat: unknown, lng: unknown, place: string): string | null {
-  if (lat === null || lat === undefined || lat === "" || lng === null || lng === undefined || lng === "") {
+  const isEmpty = (value: unknown) => value === null || value === undefined || value === "";
+  if (isEmpty(lat) || isEmpty(lng)) {
     return `กรุณาปักหมุด${place}บนแผนที่`;
   }
   if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) {
@@ -117,12 +136,16 @@ export function outsideArea(lat: unknown, lng: unknown, place: string): string |
   return null;
 }
 
+// =====================================================================
+// ส่วนที่ 3: เวลา และตัวเลข
+// =====================================================================
+
 // แปลงนาทีนับจากเที่ยงคืนเป็นเวลา เช่น 702 -> "11:42" (เกินเที่ยงคืนวนกลับเป็น 00:xx)
 export function toTime(minutes: number): string {
   const total = Math.ceil(minutes);
-  const h = Math.floor(total / 60) % 24;
-  const m = total % 60;
-  return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+  const hour = Math.floor(total / 60) % 24;
+  const minute = total % 60;
+  return String(hour).padStart(2, "0") + ":" + String(minute).padStart(2, "0");
 }
 
 // ปัดทศนิยม 2 ตำแหน่ง
@@ -132,166 +155,216 @@ function round2(value: number): number {
 
 // เวลาตอนนี้ตามเวลาไทย เป็นนาทีนับจากเที่ยงคืน (ใช้เป็นเวลาออกส่ง)
 export function nowMinutes(): number {
-  const [h, m] = new Date()
+  const [hour, minute] = new Date()
     .toLocaleTimeString("en-GB", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", hour12: false })
     .split(":");
-  return (Number(h) % 24) * 60 + Number(m);
+  return (Number(hour) % 24) * 60 + Number(minute);
 }
+
+// =====================================================================
+// ส่วนที่ 4: คิด 1 เที่ยว
+// =====================================================================
 
 // คำนวณรายละเอียดของ 1 เที่ยว ตามลำดับออเดอร์ที่ให้มา: ระยะทาง เวลาถึงแต่ละจุด ค่าไรเดอร์ กำไร
 // start = เวลาออกจากร้าน (นาทีนับจากเที่ยงคืน) ใช้แสดงเวลานาฬิกา, ตอนคิดแผนยังไม่ออกส่ง ใช้ 0 (ดูแค่นาทีที่ใช้)
 export function measureRoute(orders: PlanOrder[], start = 0): RouteResult {
-  let lat = SHOP.lat;
+  let lat = SHOP.lat; // ตำแหน่งไรเดอร์ตอนนี้ (เริ่มที่ร้าน)
   let lng = SHOP.lng;
   let km = 0;
-  let time = 0; // นาทีหลังออกจากร้าน
+  let minutes = 0; // นาทีหลังออกจากร้าน
   let boxes = 0;
   let sales = 0;
-  let late = 0;
+  let lateCount = 0;
   const stops: StopResult[] = [];
 
   for (let i = 0; i < orders.length; i++) {
-    const o = orders[i] as PlanOrder;
-    const legKm = distanceKm(lat, lng, o.delivery_latitude, o.delivery_longitude);
+    const order = orders[i] as PlanOrder;
+    const legKm = distanceKm(lat, lng, order.delivery_latitude, order.delivery_longitude);
     km = km + legKm;
-    time = time + (legKm / SPEED_KMH) * 60; // เวลาขับ (นาที) = ระยะ / ความเร็ว x 60
-    if (time > MAX_MINUTES) late = late + 1;
+    minutes = minutes + (legKm / SPEED_KMH) * 60; // เวลาขับ (นาที) = ระยะ / ความเร็ว x 60
+    if (minutes > MAX_MINUTES) lateCount = lateCount + 1;
     stops.push({
       seq: i + 1,
-      order_id: o.id,
-      customer_id: o.customer_id,
-      first_name: o.first_name,
-      last_name: o.last_name,
-      phone: o.phone,
-      delivery_address: o.delivery_address,
-      latitude: o.delivery_latitude,
-      longitude: o.delivery_longitude,
-      quantity: o.quantity,
+      order_id: order.id,
+      customer_id: order.customer_id,
+      first_name: order.first_name,
+      last_name: order.last_name,
+      phone: order.phone,
+      delivery_address: order.delivery_address,
+      latitude: order.delivery_latitude,
+      longitude: order.delivery_longitude,
+      quantity: order.quantity,
       distance_km: round2(legKm),
-      eta: toTime(start + time),
-      minutes: Math.ceil(time),
+      eta: toTime(start + minutes),
+      minutes: Math.ceil(minutes),
     });
-    time = time + STOP_MINUTES; // จอดส่งของก่อนไปจุดถัดไป
-    boxes = boxes + o.quantity;
-    sales = sales + Number(o.total_price);
-    lat = o.delivery_latitude;
-    lng = o.delivery_longitude;
+    minutes = minutes + STOP_MINUTES; // จอดส่งของก่อนไปจุดถัดไป
+    boxes = boxes + order.quantity;
+    sales = sales + Number(order.total_price);
+    lat = order.delivery_latitude;
+    lng = order.delivery_longitude;
   }
 
   // ค่าไรเดอร์ = 15 + 2 x ระยะทางทั้งรอบ x จำนวนกล่องที่ถือไป
   const riderCost = RIDER_BASE + RIDER_PER_KM_BOX * km * boxes;
+  const foodCost = boxes * BOX_COST;
   return {
     route_no: 0,
-    order_ids: orders.map((o) => o.id),
+    order_ids: orders.map((order) => order.id),
     stops: stops,
     total_km: round2(km),
     boxes: boxes,
     sales: round2(sales),
-    food_cost: boxes * BOX_COST,
+    food_cost: foodCost,
     rider_cost: round2(riderCost),
-    profit: round2(sales - boxes * BOX_COST - riderCost),
-    finish_time: toTime(start + time - STOP_MINUTES),
-    finish_minutes: Math.ceil(time - STOP_MINUTES),
-    late_orders: late,
+    profit: round2(sales - foodCost - riderCost),
+    // เวลาถึงจุดสุดท้าย (ลบเวลาจอดที่บวกไว้ตอนท้ายลูปออก)
+    finish_time: toTime(start + minutes - STOP_MINUTES),
+    finish_minutes: Math.ceil(minutes - STOP_MINUTES),
+    late_orders: lateCount,
   };
 }
 
 // ทุกลำดับที่เป็นไปได้ของออเดอร์ (ไม่เกิน 3 ออเดอร์ จึงมีอย่างมาก 6 แบบ)
+// เช่น [A, B] -> [A, B], [B, A]
 function permutations(list: PlanOrder[]): PlanOrder[][] {
   if (list.length <= 1) return [list];
   const result: PlanOrder[][] = [];
   for (let i = 0; i < list.length; i++) {
+    const first = list[i] as PlanOrder;
     const rest = list.filter((_, j) => j !== i);
-    for (const p of permutations(rest)) {
-      result.push([list[i] as PlanOrder, ...p]);
+    for (const restOrder of permutations(rest)) {
+      result.push([first, ...restOrder]);
     }
   }
   return result;
 }
 
-// เก็บผลของกลุ่มที่เคยคำนวณแล้ว (กลุ่มเดิมไม่ต้องคิดซ้ำ ทำให้คำนวณเร็วขึ้นมาก)
-let memo = new Map<string, RouteResult>();
+// เก็บผลของกลุ่มออเดอร์ที่เคยคำนวณแล้ว (กลุ่มเดิมไม่ต้องคิดซ้ำ ทำให้คำนวณเร็วขึ้นมาก)
+let savedBest = new Map<string, RouteResult>();
 
 // หาลำดับการส่งที่ดีที่สุดของ 1 เที่ยว: ลองทุกลำดับ เลือกที่ไม่เลท และค่าไรเดอร์น้อยสุด
 // (ค่าไรเดอร์คิดตามระยะทั้งรอบ ลำดับที่ระยะสั้นสุดจึงถูกสุด เช่น จุดใกล้ร้านส่งก่อน)
 function bestRoute(orders: PlanOrder[]): RouteResult {
-  // ชื่อกลุ่ม = รหัสออเดอร์เรียงจากน้อยไปมาก (มีไม่เกิน 3 ตัว เรียงเองแบบง่ายๆ เร็วกว่า sort)
-  let a = orders[0]?.id ?? 0;
-  let b = orders[1]?.id ?? 0;
-  let c = orders[2]?.id ?? 0;
-  if (a > b) [a, b] = [b, a];
-  if (b > c) [b, c] = [c, b];
-  if (a > b) [a, b] = [b, a];
-  const key = a + "," + b + "," + c;
-  const saved = memo.get(key);
+  // ชื่อกลุ่ม = รหัสออเดอร์เรียงจากน้อยไปมาก เช่น "3,8,12" (สลับลำดับมาก็ได้ชื่อเดิม)
+  const key = orders
+    .map((order) => order.id)
+    .sort((x, y) => x - y)
+    .join(",");
+  const saved = savedBest.get(key);
   if (saved) return saved;
+
   let best: RouteResult | null = null;
-  for (const p of permutations(orders)) {
-    const route = measureRoute(p);
-    if (
-      best === null ||
-      route.late_orders < best.late_orders ||
-      (route.late_orders === best.late_orders && route.rider_cost < best.rider_cost)
-    ) {
+  for (const order of permutations(orders)) {
+    const route = measureRoute(order);
+    const lessLate = best !== null && route.late_orders < best.late_orders;
+    const sameLateButCheaper =
+      best !== null && route.late_orders === best.late_orders && route.rider_cost < best.rider_cost;
+    if (best === null || lessLate || sameLateButCheaper) {
       best = route;
     }
   }
-  memo.set(key, best as RouteResult);
+  savedBest.set(key, best as RouteResult);
   return best as RouteResult;
 }
 
-// ค่าไรเดอร์ของกลุ่ม (ถ้ามีจุดเลย คิดแพงมากๆ เพื่อไม่ให้เลือกแบบนี้)
-function groupCost(route: RouteResult): number {
+// ค่าใช้จ่ายของเที่ยวไว้เปรียบเทียบ = ค่าไรเดอร์ (ถ้ามีจุดเลท บวกเพิ่มแพงมากๆ เพื่อไม่ให้เลือกแบบนี้)
+function routeCost(route: RouteResult): number {
   return route.rider_cost + route.late_orders * 100000;
+}
+
+// ค่าใช้จ่ายรวมของหลายเที่ยว
+function totalCost(routes: RouteResult[]): number {
+  let sum = 0;
+  for (const route of routes) sum = sum + routeCost(route);
+  return sum;
+}
+
+// ดึงข้อมูลออเดอร์ตามรหัสที่ให้มา (เรียงตามรหัสที่ให้)
+// ฟังก์ชันนี้ถูกเรียกบ่อยมาก จึงสร้างตาราง รหัส -> ออเดอร์ ของแต่ละรายการไว้ครั้งเดียว แล้วจำไว้ใช้ซ้ำ
+const orderTables = new WeakMap<PlanOrder[], Map<number, PlanOrder>>();
+export function ordersOf(orders: PlanOrder[], ids: number[]): PlanOrder[] {
+  let table = orderTables.get(orders);
+  if (!table) {
+    table = new Map<number, PlanOrder>();
+    for (const order of orders) table.set(order.id, order);
+    orderTables.set(orders, table);
+  }
+  const result: PlanOrder[] = [];
+  for (const id of ids) {
+    const order = table.get(id);
+    if (order) result.push(order);
+  }
+  return result;
+}
+
+// =====================================================================
+// ส่วนที่ 5: จัดทั้งแผน (แบ่งออเดอร์ให้ไรเดอร์หลายคน)
+// =====================================================================
+
+// การรวม 2 เที่ยวเป็นเที่ยวเดียว และเงินที่ประหยัดได้
+interface Merge {
+  routeA: RouteResult;
+  routeB: RouteResult;
+  merged: RouteResult; // เที่ยวใหม่หลังรวม
+  saving: number; // ค่าไรเดอร์ที่ลดลง
 }
 
 // จัดเส้นทาง 1 แบบ
 // 1) เริ่มจากให้ไรเดอร์ 1 คนต่อ 1 ออเดอร์
-// 2) รวมกลุ่มที่อยู่ใกล้กันเข้าด้วยกัน ถ้ารวมแล้วค่าไรเดอร์รวมลดลง (วิธี Savings) จนรวมต่อไม่ได้
+// 2) รวมเที่ยวที่อยู่ใกล้กันเข้าด้วยกัน ถ้ารวมแล้วค่าไรเดอร์รวมลดลง (วิธี Savings) จนรวมต่อไม่ได้
 // 3) ลองย้าย / สลับออเดอร์ระหว่างไรเดอร์ ถ้าค่าใช้จ่ายลดลงก็เปลี่ยน
 // 4) จำนวนเที่ยวต้องไม่เกินจำนวนไรเดอร์ที่มี (maxRoutes) ถ้าเกินให้ยุบเที่ยวรวมกัน
 // random = true จะสุ่มเลือกการรวมจาก 3 อันดับแรก เพื่อให้ได้เส้นทางแบบอื่นมาเสนอ
 function buildRoutes(orders: PlanOrder[], random: boolean, maxRoutes: number): RouteResult[] {
-  let routes: RouteResult[] = orders.map((o) => bestRoute([o]));
+  // ขั้นที่ 1: 1 ออเดอร์ = 1 เที่ยว
+  let routes: RouteResult[] = orders.map((order) => bestRoute([order]));
 
-  // ขั้นที่ 2 รวมกลุ่ม: คิดผลประหยัดของทุกคู่ไว้ก่อน รวมคู่ที่ประหยัดสุด แล้วคิดเพิ่มเฉพาะคู่ของกลุ่มใหม่ (เร็วกว่าคิดใหม่ทุกคู่)
-  type Merge = { a: RouteResult; b: RouteResult; saving: number; route: RouteResult };
-  const tryMerge = (a: RouteResult, b: RouteResult): Merge | null => {
-    if (a.order_ids.length + b.order_ids.length > MAX_ORDERS) return null;
-    const merged = bestRoute(ordersOf(orders, [...a.order_ids, ...b.order_ids]));
+  // ลองรวม 2 เที่ยว: รวมได้และประหยัดได้จริง คืนค่าการรวม ไม่งั้นคืนค่า null
+  const tryMerge = (routeA: RouteResult, routeB: RouteResult): Merge | null => {
+    if (routeA.order_ids.length + routeB.order_ids.length > MAX_ORDERS) return null;
+    const merged = bestRoute(ordersOf(orders, [...routeA.order_ids, ...routeB.order_ids]));
     if (merged.late_orders > 0) return null;
-    const saving = groupCost(a) + groupCost(b) - groupCost(merged);
-    return saving > 0.01 ? { a: a, b: b, saving: saving, route: merged } : null;
+    const saving = routeCost(routeA) + routeCost(routeB) - routeCost(merged);
+    if (saving > 0.01) {
+      return { routeA: routeA, routeB: routeB, merged: merged, saving: saving };
+    }
+    return null;
   };
+
+  // ขั้นที่ 2: คิดผลประหยัดของทุกคู่ไว้ก่อน รวมคู่ที่ประหยัดสุด แล้วคิดเพิ่มเฉพาะคู่ของเที่ยวใหม่ (เร็วกว่าคิดใหม่ทุกคู่)
   let merges: Merge[] = [];
   for (let i = 0; i < routes.length; i++) {
     for (let j = i + 1; j < routes.length; j++) {
-      const m = tryMerge(routes[i] as RouteResult, routes[j] as RouteResult);
-      if (m) merges.push(m);
+      const merge = tryMerge(routes[i] as RouteResult, routes[j] as RouteResult);
+      if (merge) merges.push(merge);
     }
   }
   while (merges.length > 0) {
-    merges.sort((x, y) => y.saving - x.saving);
-    const pick = random ? Math.floor(Math.random() * Math.min(3, merges.length)) : 0;
-    const m = merges[pick] as Merge;
-    routes = routes.filter((r) => r !== m.a && r !== m.b);
-    merges = merges.filter((x) => x.a !== m.a && x.a !== m.b && x.b !== m.a && x.b !== m.b);
-    for (const r of routes) {
-      const x = tryMerge(r, m.route);
-      if (x) merges.push(x);
+    merges.sort((x, y) => y.saving - x.saving); // ประหยัดมากสุดอยู่หน้าสุด
+    const pickIndex = random ? Math.floor(Math.random() * Math.min(3, merges.length)) : 0;
+    const pick = merges[pickIndex] as Merge;
+    // เอา 2 เที่ยวเดิมออก และทิ้งการรวมอื่นที่ใช้เที่ยวเดิมนั้น (เที่ยวเดิมไม่มีแล้ว)
+    const isOld = (route: RouteResult) => route === pick.routeA || route === pick.routeB;
+    routes = routes.filter((route) => !isOld(route));
+    merges = merges.filter((merge) => !isOld(merge.routeA) && !isOld(merge.routeB));
+    // คิดการรวมของเที่ยวใหม่กับเที่ยวอื่นที่เหลือ
+    for (const route of routes) {
+      const merge = tryMerge(route, pick.merged);
+      if (merge) merges.push(merge);
     }
-    routes.push(m.route);
+    routes.push(pick.merged);
   }
 
-  // ขั้นที่ 3 ปรับปรุงด้วยการย้าย / สลับออเดอร์
+  // ขั้นที่ 3: ปรับปรุงด้วยการย้าย / สลับออเดอร์
   routes = improve(orders, routes);
 
-  // ขั้นที่ 4 ไรเดอร์มีไม่พอ: ยุบเที่ยวที่เล็กที่สุด กระจายออเดอร์ไปใส่เที่ยวอื่นที่ยังรับได้ จนเหลือเท่าจำนวนไรเดอร์
+  // ขั้นที่ 4: ไรเดอร์มีไม่พอ ยุบเที่ยวทีละเที่ยว จนเหลือเท่าจำนวนไรเดอร์
   if (routes.length > maxRoutes) {
     while (routes.length > maxRoutes) {
-      const smaller = reduceOne(orders, routes);
-      if (smaller === null) break; // ยุบไม่ได้แล้ว (ส่งไม่ทันเวลา) แผนนี้ใช้ไม่ได้
-      routes = smaller;
+      const fewer = removeOneRoute(orders, routes);
+      if (fewer === null) break; // ยุบไม่ได้แล้ว (ส่งไม่ทันเวลา) แผนนี้ใช้ไม่ได้
+      routes = fewer;
     }
     routes = improve(orders, routes);
   }
@@ -299,25 +372,25 @@ function buildRoutes(orders: PlanOrder[], random: boolean, maxRoutes: number): R
 }
 
 // ลองยุบ 1 เที่ยว: เอาออเดอร์ของเที่ยวนั้นไปใส่เที่ยวอื่นที่ยังไม่เต็ม 3 ออเดอร์ (ต้องไม่เลท)
-// ลองจากเที่ยวที่มีออเดอร์น้อยสุดก่อน ได้แบบที่ค่าไรเดอร์รวมน้อยสุด คืนค่า null ถ้ายุบไม่ได้เลย
-function reduceOne(orders: PlanOrder[], routes: RouteResult[]): RouteResult[] | null {
+// ลองยุบทีละเที่ยว แล้วเลือกแบบที่ค่าใช้จ่ายรวมน้อยสุด คืนค่า null ถ้ายุบเที่ยวไหนไม่ได้เลย
+function removeOneRoute(orders: PlanOrder[], routes: RouteResult[]): RouteResult[] | null {
   let best: RouteResult[] | null = null;
   let bestCost = Infinity;
   for (let k = 0; k < routes.length; k++) {
     const removed = routes[k] as RouteResult;
     let rest = routes.filter((_, i) => i !== k);
-    let ok = true;
+    let canRemove = true;
     for (const id of removed.order_ids) {
-      // ใส่ออเดอร์ id ในเที่ยวที่ค่าใช้จ่ายเพิ่มน้อยสุด
+      // หาเที่ยวที่ใส่ออเดอร์ id แล้วค่าไรเดอร์เพิ่มน้อยสุด
       let pickIndex = -1;
       let pickRoute: RouteResult | null = null;
       let pickAdd = Infinity;
       for (let i = 0; i < rest.length; i++) {
-        const r = rest[i] as RouteResult;
-        if (r.order_ids.length >= MAX_ORDERS) continue;
-        const merged = bestRoute(ordersOf(orders, [...r.order_ids, id]));
-        if (merged.late_orders > 0) continue;
-        const add = merged.rider_cost - r.rider_cost;
+        const route = rest[i] as RouteResult;
+        if (route.order_ids.length >= MAX_ORDERS) continue; // เต็มแล้ว
+        const merged = bestRoute(ordersOf(orders, [...route.order_ids, id]));
+        if (merged.late_orders > 0) continue; // ใส่แล้วเลท
+        const add = merged.rider_cost - route.rider_cost;
         if (add < pickAdd) {
           pickAdd = add;
           pickIndex = i;
@@ -325,13 +398,13 @@ function reduceOne(orders: PlanOrder[], routes: RouteResult[]): RouteResult[] | 
         }
       }
       if (pickRoute === null) {
-        ok = false;
+        canRemove = false; // ออเดอร์นี้ไม่มีเที่ยวไหนรับได้
         break;
       }
-      rest = rest.map((r, i) => (i === pickIndex ? (pickRoute as RouteResult) : r));
+      rest = rest.map((route, i) => (i === pickIndex ? (pickRoute as RouteResult) : route));
     }
-    if (!ok) continue;
-    const cost = rest.reduce((sum, r) => sum + groupCost(r), 0);
+    if (!canRemove) continue;
+    const cost = totalCost(rest);
     if (cost < bestCost) {
       bestCost = cost;
       best = rest;
@@ -340,7 +413,7 @@ function reduceOne(orders: PlanOrder[], routes: RouteResult[]): RouteResult[] | 
   return best;
 }
 
-// ลองย้าย / สลับออเดอร์ระหว่างไรเดอร์ ถ้าค่าใช้จ่ายลดลงก็เปลี่ยนทันที แล้วลองคู่ต่อไป ไล่ซ้ำจนลดไม่ได้อีก
+// ลองย้าย / สลับออเดอร์ระหว่างไรเดอร์ 2 คน ถ้าค่าใช้จ่ายลดลงก็เปลี่ยนทันที แล้วลองคู่ต่อไป ไล่ซ้ำจนลดไม่ได้อีก
 function improve(orders: PlanOrder[], start: RouteResult[]): RouteResult[] {
   const routes: (RouteResult | null)[] = [...start]; // null = เที่ยวที่ถูกย้ายออเดอร์ออกหมดแล้ว
   let improved = true;
@@ -348,18 +421,18 @@ function improve(orders: PlanOrder[], start: RouteResult[]): RouteResult[] {
     improved = false;
     for (let i = 0; i < routes.length; i++) {
       for (let j = 0; j < routes.length; j++) {
-        const a = routes[i];
-        const b = routes[j];
-        if (i === j || !a || !b) continue;
-        const before = groupCost(a) + groupCost(b);
+        const routeA = routes[i];
+        const routeB = routes[j];
+        if (i === j || !routeA || !routeB) continue;
+        const before = routeCost(routeA) + routeCost(routeB);
         let changed = false;
-        for (const idA of a.order_ids) {
-          // ย้ายออเดอร์ idA จากเที่ยว a ไปเที่ยว b
-          if (b.order_ids.length < MAX_ORDERS) {
-            const restA = a.order_ids.filter((id) => id !== idA);
-            const newB = bestRoute(ordersOf(orders, [...b.order_ids, idA]));
+        for (const idA of routeA.order_ids) {
+          // แบบที่ 1: ย้ายออเดอร์ idA จากเที่ยว A ไปเที่ยว B
+          if (routeB.order_ids.length < MAX_ORDERS) {
+            const restA = routeA.order_ids.filter((id) => id !== idA);
+            const newB = bestRoute(ordersOf(orders, [...routeB.order_ids, idA]));
             const newA = restA.length > 0 ? bestRoute(ordersOf(orders, restA)) : null;
-            const after = groupCost(newB) + (newA ? groupCost(newA) : 0);
+            const after = routeCost(newB) + (newA ? routeCost(newA) : 0);
             if (after < before - 0.01) {
               routes[i] = newA;
               routes[j] = newB;
@@ -367,11 +440,11 @@ function improve(orders: PlanOrder[], start: RouteResult[]): RouteResult[] {
               break;
             }
           }
-          // สลับออเดอร์ idA กับออเดอร์ idB ของเที่ยว b
-          for (const idB of b.order_ids) {
-            const newA = bestRoute(ordersOf(orders, [...a.order_ids.filter((id) => id !== idA), idB]));
-            const newB = bestRoute(ordersOf(orders, [...b.order_ids.filter((id) => id !== idB), idA]));
-            if (groupCost(newA) + groupCost(newB) < before - 0.01) {
+          // แบบที่ 2: สลับออเดอร์ idA ของเที่ยว A กับออเดอร์ idB ของเที่ยว B
+          for (const idB of routeB.order_ids) {
+            const newA = bestRoute(ordersOf(orders, [...routeA.order_ids.filter((id) => id !== idA), idB]));
+            const newB = bestRoute(ordersOf(orders, [...routeB.order_ids.filter((id) => id !== idB), idA]));
+            if (routeCost(newA) + routeCost(newB) < before - 0.01) {
               routes[i] = newA;
               routes[j] = newB;
               changed = true;
@@ -384,69 +457,55 @@ function improve(orders: PlanOrder[], start: RouteResult[]): RouteResult[] {
       }
     }
   }
-  return routes.filter((r) => r !== null) as RouteResult[];
-}
-
-// ดึงข้อมูลออเดอร์ตามรหัสที่ให้มา (เรียงตามรหัสที่ให้)
-// (จำตาราง รหัส -> ออเดอร์ ของแต่ละชุดไว้ ไม่ต้องไล่หาทีละตัวทุกครั้ง)
-const orderTables = new WeakMap<PlanOrder[], Map<number, PlanOrder>>();
-export function ordersOf(orders: PlanOrder[], ids: number[]): PlanOrder[] {
-  let table = orderTables.get(orders);
-  if (!table) {
-    table = new Map(orders.map((o) => [o.id, o]));
-    orderTables.set(orders, table);
-  }
-  const result: PlanOrder[] = [];
-  for (const id of ids) {
-    const order = table.get(id);
-    if (order) result.push(order);
-  }
-  return result;
+  return routes.filter((route) => route !== null) as RouteResult[];
 }
 
 // รวมเที่ยวทั้งหมดเป็น 1 แผน พร้อมสรุปยอดขาย ต้นทุน ค่าไรเดอร์ กำไร และเวลาส่งเสร็จ
 export function summarize(routes: RouteResult[]): PlanResult {
-  // เรียงเที่ยวตามมุมรอบร้าน (ทิศ) ให้ไรเดอร์คนที่ 1, 2, 3 ... ไล่ตามทิศ ดูบนแผนที่ง่าย
-  const angle = (r: RouteResult) => {
-    const first = r.stops[0] as StopResult;
+  // เรียงเที่ยวตามทิศรอบร้าน (มุมของจุดแรก) ให้ไรเดอร์คนที่ 1, 2, 3 ... ไล่ตามทิศ ดูบนแผนที่ง่าย
+  const angle = (route: RouteResult) => {
+    const first = route.stops[0] as StopResult;
     return Math.atan2(first.latitude - SHOP.lat, first.longitude - SHOP.lng);
   };
-  // คัดลอกเที่ยวก่อน (ใช้ร่วมกันหลายแผน) แล้วเรียง
-  const sorted = routes.map((r) => ({ ...r })).sort((a, b) => angle(a) - angle(b));
+  // คัดลอกเที่ยวก่อนเรียง (เที่ยวเดียวกันอาจใช้ร่วมกันหลายแผน)
+  const sorted = routes.map((route) => ({ ...route })).sort((a, b) => angle(a) - angle(b));
+
   let km = 0;
   let boxes = 0;
   let sales = 0;
   let riderCost = 0;
-  let late = 0;
-  let finish = "";
+  let lateCount = 0;
+  let finishTime = "";
   let finishMinutes = 0;
   let orderCount = 0;
   for (let i = 0; i < sorted.length; i++) {
-    const r = sorted[i] as RouteResult;
-    r.route_no = i + 1;
-    km = km + r.total_km;
-    boxes = boxes + r.boxes;
-    sales = sales + r.sales;
-    riderCost = riderCost + r.rider_cost;
-    late = late + r.late_orders;
-    orderCount = orderCount + r.order_ids.length;
-    if (finish === "" || r.finish_minutes > finishMinutes) {
-      finish = r.finish_time;
-      finishMinutes = r.finish_minutes;
+    const route = sorted[i] as RouteResult;
+    route.route_no = i + 1;
+    km = km + route.total_km;
+    boxes = boxes + route.boxes;
+    sales = sales + route.sales;
+    riderCost = riderCost + route.rider_cost;
+    lateCount = lateCount + route.late_orders;
+    orderCount = orderCount + route.order_ids.length;
+    // เวลาส่งเสร็จของทั้งแผน = เที่ยวที่ถึงจุดสุดท้ายช้าที่สุด
+    if (finishTime === "" || route.finish_minutes > finishMinutes) {
+      finishTime = route.finish_time;
+      finishMinutes = route.finish_minutes;
     }
   }
+  const foodCost = boxes * BOX_COST;
   return {
     riders: sorted.length,
     orders: orderCount,
     boxes: boxes,
     total_km: round2(km),
     sales: round2(sales),
-    food_cost: boxes * BOX_COST,
+    food_cost: foodCost,
     rider_cost: round2(riderCost),
-    profit: round2(sales - boxes * BOX_COST - riderCost),
-    finish_time: finish,
+    profit: round2(sales - foodCost - riderCost),
+    finish_time: finishTime,
     finish_minutes: finishMinutes,
-    late_orders: late,
+    late_orders: lateCount,
     routes: sorted,
   };
 }
@@ -454,17 +513,21 @@ export function summarize(routes: RouteResult[]): PlanResult {
 // เสนอแผนเส้นทาง 3 แบบ (ค่าใช้จ่ายน้อยสุดก่อน) ใช้ไรเดอร์ไม่เกิน maxRoutes คน (หาแผนไม่ได้ คืนค่า [])
 // round = ครั้งที่กด "คำนวณใหม่" (0 = ครั้งแรก) ครั้งถัดไปจะเสนอแผนอันดับถัดไปที่ต่างจากเดิม
 export function makePlans(orders: PlanOrder[], round: number, maxRoutes: number): PlanResult[] {
-  memo = new Map<string, RouteResult>();
+  savedBest = new Map<string, RouteResult>();
   const found: PlanResult[] = [];
-  const seen: string[] = [];
+  const seen: string[] = []; // แผนที่เจอแล้ว (ไม่เก็บแผนซ้ำ)
   const startTime = Date.now();
+
   // คิด 80 แบบ แต่ถ้าออเดอร์เยอะจนใช้เวลาเกิน 3 วินาที หยุดก่อน (ตอบให้เร็ว ไม่ให้ server ตัดเพราะช้าเกิน)
-  for (let i = 0; i < 80 && (i < 5 || Date.now() - startTime < 3000); i++) {
-    const plan = summarize(buildRoutes(orders, i > 0, maxRoutes)); // รอบแรกไม่สุ่ม รอบต่อไปสุ่ม
+  for (let i = 0; i < 80; i++) {
+    const tooSlow = i >= 5 && Date.now() - startTime >= 3000;
+    if (tooSlow) break;
+    const random = i > 0; // แบบแรกไม่สุ่ม แบบต่อไปสุ่ม
+    const plan = summarize(buildRoutes(orders, random, maxRoutes));
     if (plan.riders > maxRoutes) continue; // ไรเดอร์ไม่พอสำหรับแผนนี้
-    // แผนที่แบ่งกลุ่มเหมือนกันนับเป็นแผนเดียว
+    // ชื่อแผน = กลุ่มออเดอร์ของแต่ละเที่ยว เช่น "1,5|2,3,9|4" (แผนที่แบ่งกลุ่มเหมือนกันนับเป็นแผนเดียว)
     const key = plan.routes
-      .map((r) => [...r.order_ids].sort((a, b) => a - b).join(","))
+      .map((route) => [...route.order_ids].sort((a, b) => a - b).join(","))
       .sort()
       .join("|");
     if (!seen.includes(key)) {
@@ -472,9 +535,10 @@ export function makePlans(orders: PlanOrder[], round: number, maxRoutes: number)
       found.push(plan);
     }
   }
+  // ไม่เลทก่อน แล้วเรียงค่าไรเดอร์จากน้อยไปมาก
   found.sort((a, b) => a.late_orders - b.late_orders || a.rider_cost - b.rider_cost);
 
-  // เลือก 3 แผนตามรอบที่กด (วนกลับไปเริ่มใหม่ถ้าแผนหมด)
+  // เลือก 3 แผนตามครั้งที่กด (แผนหมดแล้ว วนกลับไปเริ่มใหม่)
   const result: PlanResult[] = [];
   const count = Math.min(3, found.length);
   for (let i = 0; i < count; i++) {

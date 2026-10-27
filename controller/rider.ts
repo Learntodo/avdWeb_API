@@ -47,7 +47,7 @@ router.post("/", async (req, res) => {
     }
     // เก็บรหัสผ่านแบบเข้ารหัส (bcrypt) ไม่เก็บรหัสจริงในฐานข้อมูล
     const hash = await bcrypt.hash(String(rider.password), 10);
-    let sql =
+    const sql =
       "INSERT INTO `users`(`phone`, `password`, `role`, `first_name`, `last_name`, `license_plate`) VALUES (?,?,'rider',?,?,?)";
     const [result] = await conn.query(sql, [
       rider.phone,

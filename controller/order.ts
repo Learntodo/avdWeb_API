@@ -4,18 +4,18 @@ import mysql from "mysql2";
 import { conn } from "../dbconnect";
 import { Customer } from "../model/customer";
 import { Order } from "../model/order";
-import { readDate } from "./route";
-import { readCount } from "./simulate";
+import { thaiDate, readDate, readCount } from "../utils";
 import { SHOP, MAX_KM, outsideArea } from "../planner";
 
 export const router = express.Router();
 
-// วันที่ส่งแบบ YYYY-MM-DD ตามเวลาไทย (ไม่ส่งมา = วันนี้, ส่งแบบมีเวลาเช่น "2026-10-09T17:00:00.000Z" ก็แปลงให้)
-export function thaiDate(value?: string) {
-  if (value && value.length === 10) return value;
-  const date = value ? new Date(value) : new Date();
-  return date.toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+// ออเดอร์นี้อยู่ในใบงานไรเดอร์แล้วหรือยัง
+// (อยู่แล้ว ห้ามแก้จำนวน / ที่อยู่ / วันส่ง และห้ามลบ ไม่งั้นใบงานไม่ตรงกับออเดอร์)
+async function inRoute(id: number | string): Promise<boolean> {
+  const [rows] = await conn.query("SELECT id FROM route_stops WHERE order_id = ?", [id]);
+  return (rows as any[]).length > 0;
 }
+const IN_ROUTE_ERROR = "ออเดอร์นี้อยู่ในใบงานไรเดอร์แล้ว แก้ไขไม่ได้ (ยกเลิกใบงานในหน้าจัดเส้นทางก่อน)";
 
 // 3.1 จำลองรายการสั่งซื้อ 20-30 รายการ (สุ่มลูกค้าที่มีอยู่ และจำนวน 1-3 กล่อง)
 // สุ่มเฉพาะลูกค้าที่อยู่ในระยะส่ง 3 กม. จากร้าน (นอกระยะ ไรเดอร์ส่งไม่ทันภายใน 1 ชั่วโมง จัดเส้นทางไม่ได้)
@@ -27,7 +27,8 @@ router.post("/simulate", async (req, res) => {
     if (date === null) {
       return res.status(400).json({ error: "date ต้องเป็นรูปแบบ YYYY-MM-DD" });
     }
-    const count = readCount(body.count, 20 + Math.floor(Math.random() * 11), 50);
+    const randomCount = 20 + Math.floor(Math.random() * 11); // 20-30
+    const count = readCount(body.count, randomCount, 50);
     if (count === null) {
       return res.status(400).json({ error: "count ต้องเป็นจำนวนเต็ม 1-50" });
     }
@@ -41,7 +42,7 @@ router.post("/simulate", async (req, res) => {
     if (customers.length === 0) {
       return res.status(400).json({ error: `ไม่มีลูกค้าในระยะ ${MAX_KM} กม. จากร้าน (จำลองลูกค้าก่อน)` });
     }
-    // สลับลำดับลูกค้าแบบสุ่ม แล้วไล่หยิบทีละคน (ลูกค้าพอ = ไม่มีใครได้ 2 ออเดอร์ในรอบเดียว)
+    // สลับลำดับลูกค้าแบบสุ่ม (สับไพ่ Fisher-Yates) แล้วไล่หยิบทีละคน (ลูกค้าพอ = ไม่มีใครได้ 2 ออเดอร์ในรอบเดียว)
     for (let i = customers.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       const temp = customers[i] as Customer;
@@ -55,11 +56,11 @@ router.post("/simulate", async (req, res) => {
       values.push([customer.id, quantity, customer.address, customer.latitude, customer.longitude, date, 1]);
     }
     // เพิ่มทุกรายการในคำสั่งเดียว (เร็วกว่าเพิ่มทีละรายการมาก)
-    let sql =
+    const sql =
       "INSERT INTO `orders`(`customer_id`, `quantity`, `delivery_address`, `delivery_latitude`, `delivery_longitude`, `delivery_date`, `is_simulated`) VALUES ?";
     const [result] = await conn.query(sql, [values]);
-    const affected = (result as any).affectedRows;
-    res.status(201).json({ affected_row: affected });
+    const insertResult = result as any;
+    res.status(201).json({ affected_row: insertResult.affectedRows });
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }
@@ -91,7 +92,7 @@ router.post("/", async (req, res) => {
     if (outside !== null) {
       return res.status(400).json({ error: outside });
     }
-    let sql =
+    const sql =
       "INSERT INTO `orders`(`customer_id`, `quantity`, `unit_price`, `delivery_address`, `delivery_latitude`, `delivery_longitude`, `delivery_date`, `note`) VALUES (?,?,?,?,?,?,?,?)";
     const [result] = await conn.query(sql, [
       customer.id,
@@ -125,18 +126,11 @@ router.get("/", async (req, res) => {
   }
 });
 
-// ออเดอร์นี้อยู่ในใบงานไรเดอร์แล้วหรือยัง (อยู่แล้ว ห้ามแก้จำนวน / ที่อยู่ / วันส่ง และห้ามลบ ไม่งั้นใบงานไม่ตรงกับออเดอร์)
-async function inRoute(id: number | string): Promise<boolean> {
-  const [rows] = await conn.query("SELECT id FROM route_stops WHERE order_id = ?", [id]);
-  return (rows as any[]).length > 0;
-}
-const IN_ROUTE_ERROR = "ออเดอร์นี้อยู่ในใบงานไรเดอร์แล้ว แก้ไขไม่ได้ (ยกเลิกใบงานในหน้าจัดเส้นทางก่อน)";
-
 // 3.1.3 เพิ่ม / ลด / แก้ไข จำนวนกล่อง
 // { "quantity": 3 } = แก้เป็น 3 กล่อง, { "change": 1 } = เพิ่ม 1 กล่อง, { "change": -1 } = ลด 1 กล่อง
 router.patch("/:id", async (req, res) => {
   try {
-    let id = req.params.id;
+    const id = req.params.id;
     const body = req.body || {};
     let sql = "UPDATE orders SET quantity = ? WHERE id = ?";
     let value = body.quantity;
@@ -169,7 +163,7 @@ router.delete("/simulate", async (req, res) => {
     const [rows] = await conn.query(
       "SELECT DISTINCT route_stops.route_id FROM route_stops JOIN orders ON orders.id = route_stops.order_id WHERE orders.is_simulated = 1"
     );
-    const routeIds = (rows as any[]).map((r) => r.route_id);
+    const routeIds = (rows as any[]).map((row) => row.route_id);
     if (routeIds.length > 0) {
       await conn.query(
         "UPDATE orders SET status = 'pending' WHERE status = 'delivering' AND id IN (SELECT order_id FROM route_stops WHERE route_id IN (?))",
@@ -191,7 +185,7 @@ router.get("/nearby", async (req, res) => {
   try {
     const lat = req.query.lat;
     const lng = req.query.lng;
-    let sql =
+    const sql =
       "SELECT *, 6371 * 2 * ASIN(SQRT(POWER(SIN(RADIANS(delivery_latitude - ?) / 2), 2)" +
       " + COS(RADIANS(?)) * COS(RADIANS(delivery_latitude)) * POWER(SIN(RADIANS(delivery_longitude - ?) / 2), 2))) AS distance_km" +
       " FROM orders HAVING distance_km <= 2 ORDER BY distance_km";
@@ -224,8 +218,8 @@ router.get("/:id", async (req, res) => {
 // เปลี่ยนลูกค้าที่สั่ง (customer_id) ไม่ได้
 router.put("/:id", async (req, res) => {
   try {
-    let id = +req.params.id;
-    let order: Order = req.body || {};
+    const id = +req.params.id;
+    const order: Order = req.body || {};
 
     // 1. ค้นหาข้อมูลเดิมก่อน
     let sql = mysql.format("SELECT * FROM orders WHERE id = ?", [id]);
@@ -234,13 +228,13 @@ router.put("/:id", async (req, res) => {
     if (result.length === 0) {
       return res.status(404).json({ error: "Order not found" });
     }
-    let orderOriginal = result[0] as Order;
+    const orderOriginal = result[0] as Order;
     if (order.customer_id !== undefined && order.customer_id != orderOriginal.customer_id) {
       return res.status(400).json({ error: "เปลี่ยนลูกค้าของรายการสั่งซื้อไม่ได้" });
     }
 
     // 2. นำข้อมูลเดิมมาทับด้วยข้อมูลใหม่ที่ส่งมา
-    let updateOrder = { ...orderOriginal, ...order };
+    const updateOrder = { ...orderOriginal, ...order };
     if (updateOrder.quantity < 1 || updateOrder.quantity > 3) {
       return res.status(400).json({ error: "quantity must be 1-3" });
     }
@@ -264,7 +258,7 @@ router.put("/:id", async (req, res) => {
 
     // อยู่ในใบงานแล้ว: เปลี่ยนได้แค่ "กำลังส่ง" <-> "ส่งแล้ว" และหมายเหตุ
     if (await inRoute(id)) {
-      const same =
+      const onlyStatusOrNote =
         updateOrder.quantity == orderOriginal.quantity &&
         updateOrder.unit_price == orderOriginal.unit_price &&
         updateOrder.delivery_address === orderOriginal.delivery_address &&
@@ -272,7 +266,7 @@ router.put("/:id", async (req, res) => {
         updateOrder.delivery_longitude == orderOriginal.delivery_longitude &&
         updateOrder.delivery_date === thaiDate(orderOriginal.delivery_date) &&
         ["delivering", "delivered"].includes(updateOrder.status);
-      if (!same) {
+      if (!onlyStatusOrNote) {
         return res.status(400).json({ error: IN_ROUTE_ERROR });
       }
     }
@@ -302,7 +296,7 @@ router.put("/:id", async (req, res) => {
 // ลบรายการสั่งซื้อ 1 รายการ เช่น DELETE /orders/5
 router.delete("/:id", async (req, res) => {
   try {
-    let id = req.params.id;
+    const id = req.params.id;
     if (await inRoute(id)) {
       return res.status(400).json({ error: IN_ROUTE_ERROR });
     }

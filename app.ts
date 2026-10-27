@@ -19,7 +19,7 @@ app.disable("x-powered-by");
 // รันหลัง proxy ของ Vercel ให้ req.ip เป็น IP จริงของผู้ใช้ (ใช้นับจำนวนครั้งใน limiter)
 app.set("trust proxy", 1);
 
-// CORS แบบ whitelist อนุญาตหน้าเว็บ Angular ในเครื่อง
+// CORS: อนุญาตเฉพาะหน้าเว็บของเรา (Angular ในเครื่อง และบน Vercel) เรียก API ได้
 const allowedOrigins = [
   "http://localhost:4200",
   "http://127.0.0.1:4200",
