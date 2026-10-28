@@ -207,8 +207,9 @@ export async function savedRoutes(by: "date" | "code" | "rider", value: string |
 // =====================================================================
 
 // POST /routes/plan คำนวณแผนเส้นทางของออเดอร์ที่ยังไม่อยู่ในใบงาน (ยังไม่บันทึก) ใช้ระยะตามถนนจริง
-// body: { "date": "2026-10-20", "round": 0 }
-// ตอบ 3 แผนเรียงจากค่าใช้จ่ายน้อยสุด ใช้ไรเดอร์ไม่เกินจำนวนที่ว่าง, round = ครั้งที่กดคำนวณใหม่ (ได้แผนอื่นมาเสนอ)
+// body: { "date": "2026-10-20", "seen": ["101,102|103"] } (seen ไม่ต้องส่งก็ได้)
+// ตอบครั้งละ 3 แผนเรียงจากค่าใช้จ่ายน้อยสุด ใช้ไรเดอร์ไม่เกินจำนวนที่ว่าง
+// seen = ชื่อแผนที่ดูไปแล้ว กด "ขอดูแบบอื่น" จึงได้แผนชุดถัดไปที่ไม่ซ้ำแบบเดิม (ดูครบแล้ววนกลับไปชุดแรก)
 router.post("/plan", async (req, res) => {
   try {
     const body = req.body || {};
@@ -216,8 +217,11 @@ router.post("/plan", async (req, res) => {
     if (date === null) {
       return res.status(400).json({ error: "date ต้องเป็นรูปแบบ YYYY-MM-DD" });
     }
-    let round = Number(body.round);
-    if (!Number.isInteger(round) || round < 0 || round > 1000) round = 0;
+    // seen = ชื่อแผนที่ดูไปแล้ว (ส่งมาตอนกด "ขอดูแบบอื่น") ไม่ส่งมา = เริ่มดูใหม่
+    let seen: string[] = [];
+    if (Array.isArray(body.seen)) {
+      seen = body.seen.filter((key: unknown) => typeof key === "string" && key.length <= 5000).slice(0, 100);
+    }
 
     const orders = await loadOrders(date);
     const riders = await freeRiders(date);
@@ -226,7 +230,8 @@ router.post("/plan", async (req, res) => {
       return res.status(400).json({ error: problem });
     }
     const road = await loadRoads(orders);
-    const plans = makePlans(orders, round, riders.length);
+    const result = makePlans(orders, seen, riders.length);
+    const plans = result.plans;
     if (plans.length === 0) {
       return res.status(400).json({
         error: `ไรเดอร์ที่ว่าง ${riders.length} คนส่งให้ถึงภายใน 1 ชั่วโมงไม่ได้ กรุณาเพิ่มไรเดอร์`,
@@ -240,7 +245,16 @@ router.post("/plan", async (req, res) => {
       }
     }
     // road_distance: true = ระยะตามถนนจริง, false = ระยะโดยประมาณ (เชื่อมต่อแผนที่ถนนไม่ได้)
-    res.json({ date: date, road_distance: road, riders_available: riders.length, plans: plans });
+    // plan_total = จำนวนแผนทั้งหมดที่หาได้, plan_keys = ชื่อของแต่ละแผน, restart = ดูครบทุกแบบแล้ว กลับมาแบบแรก
+    res.json({
+      date: date,
+      road_distance: road,
+      riders_available: riders.length,
+      plan_total: result.total,
+      plan_keys: result.keys,
+      restart: result.restart,
+      plans: plans,
+    });
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }

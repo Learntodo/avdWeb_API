@@ -342,7 +342,7 @@ function buildRoutes(orders: PlanOrder[], random: boolean, maxRoutes: number): R
   }
   while (merges.length > 0) {
     merges.sort((x, y) => y.saving - x.saving); // ประหยัดมากสุดอยู่หน้าสุด
-    const pickIndex = random ? Math.floor(Math.random() * Math.min(3, merges.length)) : 0;
+    const pickIndex = random ? Math.floor(nextRandom() * Math.min(3, merges.length)) : 0;
     const pick = merges[pickIndex] as Merge;
     // เอา 2 เที่ยวเดิมออก และทิ้งการรวมอื่นที่ใช้เที่ยวเดิมนั้น (เที่ยวเดิมไม่มีแล้ว)
     const isOld = (route: RouteResult) => route === pick.routeA || route === pick.routeB;
@@ -510,39 +510,147 @@ export function summarize(routes: RouteResult[]): PlanResult {
   };
 }
 
-// เสนอแผนเส้นทาง 3 แบบ (ค่าใช้จ่ายน้อยสุดก่อน) ใช้ไรเดอร์ไม่เกิน maxRoutes คน (หาแผนไม่ได้ คืนค่า [])
-// round = ครั้งที่กด "คำนวณใหม่" (0 = ครั้งแรก) ครั้งถัดไปจะเสนอแผนอันดับถัดไปที่ต่างจากเดิม
-export function makePlans(orders: PlanOrder[], round: number, maxRoutes: number): PlanResult[] {
-  savedBest = new Map<string, RouteResult>();
-  const found: PlanResult[] = [];
-  const seen: string[] = []; // แผนที่เจอแล้ว (ไม่เก็บแผนซ้ำ)
-  const startTime = Date.now();
+// ตัวสุ่มที่ได้ลำดับเลขเดิมทุกครั้งเมื่อเริ่มจากเลขตั้งต้นเดียวกัน (ออเดอร์ชุดเดิมได้แผนชุดเดิม ผลไม่เปลี่ยนไปมา)
+let randomSeed = 1;
+function nextRandom(): number {
+  randomSeed = (randomSeed * 16807) % 2147483647;
+  return randomSeed / 2147483647;
+}
 
-  // คิด 80 แบบ แต่ถ้าออเดอร์เยอะจนใช้เวลาเกิน 3 วินาที หยุดก่อน (ตอบให้เร็ว ไม่ให้ server ตัดเพราะช้าเกิน)
-  for (let i = 0; i < 80; i++) {
-    const tooSlow = i >= 5 && Date.now() - startTime >= 3000;
-    if (tooSlow) break;
-    const random = i > 0; // แบบแรกไม่สุ่ม แบบต่อไปสุ่ม
-    const plan = summarize(buildRoutes(orders, random, maxRoutes));
-    if (plan.riders > maxRoutes) continue; // ไรเดอร์ไม่พอสำหรับแผนนี้
-    // ชื่อแผน = กลุ่มออเดอร์ของแต่ละเที่ยว เช่น "1,5|2,3,9|4" (แผนที่แบ่งกลุ่มเหมือนกันนับเป็นแผนเดียว)
-    const key = plan.routes
-      .map((route) => [...route.order_ids].sort((a, b) => a - b).join(","))
-      .sort()
-      .join("|");
-    if (!seen.includes(key)) {
-      seen.push(key);
-      found.push(plan);
+// แผนที่ต่างจากแผนนี้เล็กน้อย ใช้เป็นแผนทางเลือก (ทุกแผนต้องไม่เลท ไรเดอร์ 1 คนไม่เกิน 3 ออเดอร์ และใช้ไรเดอร์ไม่เกิน maxRoutes คน)
+// 1) ย้าย 1 ออเดอร์ไปให้ไรเดอร์อีกคน  2) สลับออเดอร์ของไรเดอร์ 2 คน
+// 3) แยก 1 ออเดอร์ไปให้ไรเดอร์ที่ยังว่าง  4) เปลี่ยนลำดับจุดส่งของไรเดอร์ 1 คน
+function nearbyPlans(orders: PlanOrder[], routes: RouteResult[], maxRoutes: number): RouteResult[][] {
+  const result: RouteResult[][] = [];
+  const noLate = (list: RouteResult[]) => list.every((route) => route.late_orders === 0);
+  // แทนเที่ยวที่ i และ j ด้วยเที่ยวใหม่ (ไม่มีออเดอร์เหลือ = ไม่ใช้ไรเดอร์คนนั้น)
+  const replace = (i: number, j: number, newRoutes: RouteResult[]) => {
+    const list = routes.filter((_, k) => k !== i && k !== j);
+    if (noLate(newRoutes)) result.push([...list, ...newRoutes]);
+  };
+
+  for (let i = 0; i < routes.length; i++) {
+    const routeA = routes[i] as RouteResult;
+    for (const idA of routeA.order_ids) {
+      const restA = routeA.order_ids.filter((id) => id !== idA);
+      const newA = restA.length > 0 ? [bestRoute(ordersOf(orders, restA))] : [];
+      // แบบที่ 3: แยกออเดอร์ idA ไปให้ไรเดอร์ที่ว่างอีกคน
+      if (restA.length > 0 && routes.length < maxRoutes) {
+        replace(i, i, [...newA, bestRoute(ordersOf(orders, [idA]))]);
+      }
+      for (let j = 0; j < routes.length; j++) {
+        const routeB = routes[j] as RouteResult;
+        if (i === j) continue;
+        // แบบที่ 1: ย้ายออเดอร์ idA จากเที่ยว A ไปเที่ยว B
+        if (routeB.order_ids.length < MAX_ORDERS) {
+          replace(i, j, [...newA, bestRoute(ordersOf(orders, [...routeB.order_ids, idA]))]);
+        }
+        // แบบที่ 2: สลับออเดอร์ idA กับ idB (คิดคู่ละครั้ง i < j)
+        if (i < j) {
+          for (const idB of routeB.order_ids) {
+            const swapA = bestRoute(ordersOf(orders, [...restA, idB]));
+            const swapB = bestRoute(ordersOf(orders, [...routeB.order_ids.filter((id) => id !== idB), idA]));
+            replace(i, j, [swapA, swapB]);
+          }
+        }
+      }
+    }
+    // แบบที่ 4: เปลี่ยนลำดับจุดส่ง (ลำดับที่ดีที่สุดมีอยู่ในแผนเดิมแล้ว)
+    if (routeA.order_ids.length >= 2) {
+      for (const order of permutations(ordersOf(orders, routeA.order_ids))) {
+        const route = measureRoute(order);
+        if (route.order_ids.join(",") !== routeA.order_ids.join(",")) replace(i, i, [route]);
+      }
     }
   }
-  // ไม่เลทก่อน แล้วเรียงค่าไรเดอร์จากน้อยไปมาก
-  found.sort((a, b) => a.late_orders - b.late_orders || a.rider_cost - b.rider_cost);
-
-  // เลือก 3 แผนตามครั้งที่กด (แผนหมดแล้ว วนกลับไปเริ่มใหม่)
-  const result: PlanResult[] = [];
-  const count = Math.min(3, found.length);
-  for (let i = 0; i < count; i++) {
-    result.push(found[(round * 3 + i) % found.length] as PlanResult);
-  }
   return result;
+}
+
+// ชื่อแผน = ออเดอร์ของแต่ละเที่ยวตามลำดับส่ง เช่น "1,5|2,9,3|4" (แผนที่ชื่อเหมือนกันคือแผนเดียวกัน)
+function planKey(plan: PlanResult): string {
+  return plan.routes
+    .map((route) => route.order_ids.join(","))
+    .sort()
+    .join("|");
+}
+
+// ผลการจัดเส้นทาง: แผนที่เสนอในครั้งนี้ (ไม่เกิน 3 แบบ) + จำนวนแผนทั้งหมดที่หาได้
+export interface PlanPage {
+  plans: PlanResult[];
+  keys: string[]; // ชื่อของแต่ละแผนใน plans (หน้าเว็บส่งกลับมาตอนกด "ขอดูแบบอื่น" เพื่อไม่ให้ได้แบบเดิมซ้ำ)
+  total: number; // จำนวนแผนทั้งหมดที่หาได้ (ไม่ซ้ำกัน)
+  restart: boolean; // true = ดูครบทุกแบบแล้ว วนกลับไปเริ่มที่แบบแรก
+}
+
+export const MAX_PLANS = 30; // เก็บแผนทางเลือกไว้ไม่เกิน 30 แบบ (ค่าใช้จ่ายน้อยสุดก่อน)
+
+// เสนอแผนเส้นทางครั้งละ 3 แบบ (ค่าใช้จ่ายน้อยสุดก่อน) ใช้ไรเดอร์ไม่เกิน maxRoutes คน (หาแผนไม่ได้ plans = [])
+// seen = ชื่อแผนที่ผู้ใช้ดูไปแล้ว (กด "ขอดูแบบอื่น") จะเสนอเฉพาะแผนที่ยังไม่เคยดู ดูครบทุกแบบแล้ววนกลับไปแบบแรก
+export function makePlans(orders: PlanOrder[], seen: string[], maxRoutes: number): PlanPage {
+  savedBest = new Map<string, RouteResult>();
+  randomSeed = 1;
+  const found: PlanResult[] = [];
+  const foundKeys: string[] = [];
+  const startTime = Date.now();
+  const usedTime = () => Date.now() - startTime;
+
+  // เก็บแผนที่ใช้ได้ (ไม่เลท ไรเดอร์พอ) และไม่ซ้ำกับที่เจอแล้ว
+  const keySet = new Set<string>();
+  const keep = (routes: RouteResult[]) => {
+    const plan = summarize(routes);
+    if (plan.riders > maxRoutes || plan.late_orders > 0) return;
+    const key = planKey(plan);
+    if (!keySet.has(key)) {
+      keySet.add(key);
+      found.push(plan);
+      foundKeys.push(key);
+    }
+  };
+
+  // ขั้นที่ 1: จัดเส้นทาง 80 แบบ (แบบแรกไม่สุ่ม แบบต่อไปสุ่ม) ออเดอร์เยอะจนเกิน 3 วินาที หยุดก่อน
+  const built: RouteResult[][] = [];
+  for (let i = 0; i < 80; i++) {
+    if (i >= 5 && usedTime() >= 3000) break;
+    const routes = buildRoutes(orders, i > 0, maxRoutes);
+    built.push(routes);
+    keep(routes);
+  }
+
+  // ขั้นที่ 2: การจัดแบบสุ่มมักได้แผนเดิมซ้ำ จึงสร้างแผนทางเลือกจากแผนที่ดีที่สุด 5 แบบแรก โดยปรับทีละนิด
+  // (ย้าย / สลับ / แยกออเดอร์ / เปลี่ยนลำดับจุดส่ง) ได้แผนที่ต่างจากเดิมจริงและยังส่งทันเวลา
+  built.sort((a, b) => totalCost(a) - totalCost(b));
+  const bases: RouteResult[][] = [];
+  const baseKeys = new Set<string>();
+  for (const routes of built) {
+    const key = planKey(summarize(routes));
+    if (bases.length < 5 && !baseKeys.has(key)) {
+      baseKeys.add(key);
+      bases.push(routes);
+    }
+  }
+  for (let i = 0; i < bases.length; i++) {
+    if (i >= 1 && usedTime() >= 4000) break; // แผนแรกทำเสมอ แผนต่อไปทำเมื่อยังไม่ช้าเกิน
+    for (const other of nearbyPlans(orders, bases[i] as RouteResult[], maxRoutes)) keep(other);
+  }
+
+  // ไม่เลทก่อน แล้วเรียงค่าไรเดอร์จากน้อยไปมาก เก็บไว้ไม่เกิน MAX_PLANS แบบ
+  const order = found.map((_, i) => i);
+  order.sort((a, b) => {
+    const planA = found[a] as PlanResult;
+    const planB = found[b] as PlanResult;
+    return planA.late_orders - planB.late_orders || planA.rider_cost - planB.rider_cost;
+  });
+  const top = order.slice(0, MAX_PLANS);
+
+  // เลือก 3 แบบแรกที่ผู้ใช้ยังไม่เคยดู ถ้าดูครบทุกแบบแล้ว เริ่มใหม่ที่แบบแรก
+  let fresh = top.filter((i) => !seen.includes(foundKeys[i] as string));
+  const restart = fresh.length === 0;
+  if (restart) fresh = top;
+  const pick = fresh.slice(0, 3);
+  return {
+    plans: pick.map((i) => found[i] as PlanResult),
+    keys: pick.map((i) => foundKeys[i] as string),
+    total: top.length,
+    restart: restart && seen.length > 0,
+  };
 }
