@@ -25,7 +25,7 @@ import { RouteResult, RouteRider, SavedRoute, StopResult } from "../model/route"
 export const router = express.Router();
 
 // =====================================================================
-// ฟังก์ชันช่วย: อ่านข้อมูลจากฐานข้อมูล
+// ส่วนที่ 1: ฟังก์ชันช่วย อ่านข้อมูลจากฐานข้อมูล และตรวจก่อนจัดเส้นทาง
 // =====================================================================
 
 // ออเดอร์ "รอส่ง" ของวันที่เลือกที่ยังไม่อยู่ในใบงาน พร้อมชื่อและเบอร์ลูกค้า (รวมที่อยู่นอกเขตส่ง)
@@ -121,6 +121,10 @@ function makeCode(): string {
   return code;
 }
 
+// =====================================================================
+// ส่วนที่ 2: อ่านใบงานที่บันทึกไว้ (ใช้ทั้งหน้าจัดเส้นทาง และใบงานไรเดอร์ /jobs)
+// =====================================================================
+
 // อ่านใบงานที่บันทึกไว้ แล้วจัดเป็นเที่ยว พร้อมไรเดอร์และจุดส่งเรียงตามลำดับ
 // by = "date"  ทุกใบของวันนั้น (หน้าจัดเส้นทาง)
 // by = "code"  ใบเดียวจากเลขใบงาน
@@ -203,7 +207,7 @@ export async function savedRoutes(by: "date" | "code" | "rider", value: string |
 }
 
 // =====================================================================
-// API
+// ส่วนที่ 3: คำนวณแผน (ยังไม่บันทึก) POST /routes/plan
 // =====================================================================
 
 // POST /routes/plan คำนวณแผนเส้นทางของออเดอร์ที่ยังไม่อยู่ในใบงาน (ยังไม่บันทึก) ใช้ระยะตามถนนจริง
@@ -212,6 +216,7 @@ export async function savedRoutes(by: "date" | "code" | "rider", value: string |
 // seen = ชื่อแผนที่ดูไปแล้ว กด "ขอดูแบบอื่น" จึงได้แผนชุดถัดไปที่ไม่ซ้ำแบบเดิม (ดูครบแล้ววนกลับไปชุดแรก)
 router.post("/plan", async (req, res) => {
   try {
+    // 1. อ่านวันที่ และแผนที่ดูไปแล้ว
     const body = req.body || {};
     const date = readDate(body.date);
     if (date === null) {
@@ -223,12 +228,14 @@ router.post("/plan", async (req, res) => {
       seen = body.seen.filter((key: unknown) => typeof key === "string" && key.length <= 5000).slice(0, 100);
     }
 
+    // 2. โหลดออเดอร์ที่ต้องส่ง และไรเดอร์ที่ว่าง แล้วตรวจก่อนจัด
     const orders = await loadOrders(date);
     const riders = await freeRiders(date);
     const problem = await checkBeforePlan(orders, riders);
     if (problem !== null) {
       return res.status(400).json({ error: problem });
     }
+    // 3. คำนวณแผน (ครั้งละ 3 แบบ)
     const road = await loadRoads(orders);
     const result = makePlans(orders, seen, riders.length);
     const plans = result.plans;
@@ -245,6 +252,7 @@ router.post("/plan", async (req, res) => {
       }
     }
     // road_distance: true = ระยะตามถนนจริง, false = ระยะโดยประมาณ (เชื่อมต่อแผนที่ถนนไม่ได้)
+    // 4. ตอบกลับ
     // plan_total = จำนวนแผนทั้งหมดที่หาได้, plan_keys = ชื่อของแต่ละแผน, restart = ดูครบทุกแบบแล้ว กลับมาแบบแรก
     res.json({
       date: date,
@@ -259,6 +267,10 @@ router.post("/plan", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
+// =====================================================================
+// ส่วนที่ 4: ออกส่ง (บันทึกเป็นใบงาน) POST /routes
+// =====================================================================
 
 // POST /routes กด "ออกส่ง": ยืนยันแผนแล้วบันทึกเป็นใบงานรอบใหม่ (ใบงานรอบก่อนยังอยู่) และเปลี่ยนออเดอร์เป็น "กำลังส่ง"
 // เวลาที่กด = เวลาออกจากร้าน ทุกจุดต้องถึงภายใน 1 ชั่วโมงหลังจากนี้
@@ -348,6 +360,10 @@ router.post("/", async (req, res) => {
   }
 });
 
+// =====================================================================
+// ส่วนที่ 5: ดูใบงานทุกรอบของวัน GET /routes
+// =====================================================================
+
 // GET /routes?date=2026-10-20 ใบงานทุกรอบของวันนั้น พร้อมไรเดอร์ เวลาออกส่ง และสรุปยอดทั้งวัน
 router.get("/", async (req, res) => {
   try {
@@ -355,6 +371,7 @@ router.get("/", async (req, res) => {
     if (date === null) {
       return res.status(400).json({ error: "date ต้องเป็นรูปแบบ YYYY-MM-DD" });
     }
+    // 1. โหลดใบงาน ไรเดอร์ และออเดอร์ที่ยังรอจัด
     const routes = await savedRoutes("date", date);
     const riders = await activeRiders();
     const free = await freeRiders(date);
@@ -363,7 +380,7 @@ router.get("/", async (req, res) => {
     const waiting = all.filter((order) => inArea(order));
     const outside = all.filter((order) => !inArea(order));
 
-    // รวมยอดทั้งวัน
+    // 2. รวมยอดทั้งวัน และแยกใบงานตามรอบที่ออกส่ง
     let sales = 0;
     let riderCost = 0;
     let boxes = 0;
@@ -412,6 +429,7 @@ router.get("/", async (req, res) => {
 
     const foodCost = boxes * BOX_COST;
     const lastRound = rounds[rounds.length - 1];
+    // 3. ตอบกลับ
     res.json({
       date: date,
       riders: riderIds.length,
@@ -438,6 +456,10 @@ router.get("/", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
+// =====================================================================
+// ส่วนที่ 6: เปลี่ยนไรเดอร์ของใบงาน PUT /routes/{id}
+// =====================================================================
 
 // PUT /routes/{id} เปลี่ยนไรเดอร์ของใบงาน body: { "rider_id": 8 }
 // ถ้าไรเดอร์คนนั้นกำลังถือใบงานอื่นที่ยังไม่ได้เริ่มส่ง จะสลับใบงานกันให้
@@ -480,6 +502,10 @@ router.put("/:id", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
+// =====================================================================
+// ส่วนที่ 7: ยกเลิกใบงาน DELETE /routes/{id}
+// =====================================================================
 
 // DELETE /routes/{id} ยกเลิกใบงาน 1 เที่ยว ออเดอร์ในเที่ยวนั้นกลับเป็น "รอส่ง" (นำไปจัดรอบใหม่ได้)
 // ถ้าไรเดอร์ส่งของถึงลูกค้าไปแล้วบางจุด ยกเลิกไม่ได้

@@ -4,6 +4,10 @@ import express from "express";
 import { expressjwt } from "express-jwt";
 import jwt from "jsonwebtoken";
 
+// =====================================================================
+// ส่วนที่ 1: secret และข้อมูลในตั๋ว
+// =====================================================================
+
 // secret ต้องเป็นค่าสุ่มยาวๆ เก็บในตัวแปร env ชื่อ JWT_SECRET (ไม่เขียนไว้ในโค้ด)
 if (!process.env.JWT_SECRET) {
   throw new Error("ยังไม่ได้ตั้งค่า JWT_SECRET");
@@ -15,6 +19,10 @@ export interface TokenPayload {
   id: number;
   role: "owner" | "rider";
 }
+
+// =====================================================================
+// ส่วนที่ 2: ตรวจตั๋ว / สร้างตั๋ว / ดัก error ตั๋ว
+// =====================================================================
 
 // มิดเดิลแวร์ดักตรวจ JWT ก่อนเข้าใช้ API (ยกเว้นหน้าแรก หน้า login และการเปิดดูใบงานด้วยเลขใบงาน)
 export const jwtAuthen = expressjwt({
@@ -41,6 +49,10 @@ export function jwtError(err: any, req: express.Request, res: express.Response, 
   }
   next(err);
 }
+
+// =====================================================================
+// ส่วนที่ 3: จำกัดสิทธิ์เฉพาะเจ้าของร้าน
+// =====================================================================
 
 // ให้เข้าได้เฉพาะเจ้าของร้าน ไรเดอร์เรียกจะได้ 403
 export function ownerOnly(req: express.Request, res: express.Response, next: express.NextFunction) {

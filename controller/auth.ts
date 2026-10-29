@@ -10,6 +10,10 @@ export const router = express.Router();
 // hash ปลอมไว้เทียบตอนไม่พบเบอร์ ให้ใช้เวลาตอบเท่ากับกรณีรหัสผิด (กันการเดาว่าเบอร์ไหนมีในระบบจากเวลาที่ตอบ)
 const DUMMY_HASH = "$2b$10$BwWjQWTBWT9d9JoyVJIM1enbMSKp9nsmwBlmoycvvtP/b0PPk6Kz2";
 
+// =====================================================================
+// ส่วนที่ 1: เข้าสู่ระบบ
+// =====================================================================
+
 // POST /auth/login เข้าสู่ระบบ body: { "phone": "0900000000", "password": "..." }
 // สำเร็จได้ตั๋ว (token) ไว้แนบ Header Authorization: Bearer <token> ทุกคำขอ
 router.post("/login", async (req, res) => {
@@ -43,6 +47,10 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
+// =====================================================================
+// ส่วนที่ 2: เปลี่ยนรหัสผ่าน
+// =====================================================================
 
 // PUT /auth/password เปลี่ยนรหัสผ่านของตัวเอง body: { "old_password": "...", "new_password": "..." }
 router.put("/password", async (req, res) => {
