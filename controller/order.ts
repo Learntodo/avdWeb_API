@@ -4,7 +4,7 @@ import mysql from "mysql2";
 import { conn } from "../dbconnect";
 import { Customer } from "../model/customer";
 import { Order } from "../model/order";
-import { thaiDate, readDate, readCount } from "../utils";
+import { thaiDate } from "../utils";
 import { SHOP, MAX_KM, outsideArea } from "../planner";
 
 export const router = express.Router();
@@ -17,21 +17,12 @@ async function inRoute(id: number | string): Promise<boolean> {
 }
 const IN_ROUTE_ERROR = "ออเดอร์นี้อยู่ในใบงานไรเดอร์แล้ว แก้ไขไม่ได้ (ยกเลิกใบงานในหน้าจัดเส้นทางก่อน)";
 
-// 3.1 จำลองรายการสั่งซื้อ 20-30 รายการ (สุ่มลูกค้าที่มีอยู่ และจำนวน 1-3 กล่อง)
+// 3.1 จำลองรายการสั่งซื้อ 20-30 รายการของวันนี้ (สุ่มลูกค้าที่มีอยู่ และจำนวน 1-3 กล่อง)
 // สุ่มเฉพาะลูกค้าที่อยู่ในระยะส่ง 3 กม. จากร้าน (นอกระยะ ไรเดอร์ส่งไม่ทันภายใน 1 ชั่วโมง จัดเส้นทางไม่ได้)
-// body ไม่บังคับ: { "date": "2026-10-21", "count": 25 } ไม่ส่ง date = วันนี้, ไม่ส่ง count = สุ่ม 20-30
 router.post("/simulate", async (req, res) => {
   try {
-    const body = req.body || {};
-    const date = readDate(body.date);
-    if (date === null) {
-      return res.status(400).json({ error: "date ต้องเป็นรูปแบบ YYYY-MM-DD" });
-    }
-    const randomCount = 20 + Math.floor(Math.random() * 11); // 20-30
-    const count = readCount(body.count, randomCount, 50);
-    if (count === null) {
-      return res.status(400).json({ error: "count ต้องเป็นจำนวนเต็ม 1-50" });
-    }
+    const date = thaiDate();
+    const count = 20 + Math.floor(Math.random() * 11); // 20-30
     const [rows] = await conn.query(
       "SELECT *, 6371 * 2 * ASIN(SQRT(POWER(SIN(RADIANS(latitude - ?) / 2), 2)" +
         " + COS(RADIANS(?)) * COS(RADIANS(latitude)) * POWER(SIN(RADIANS(longitude - ?) / 2), 2))) AS distance_km" +
